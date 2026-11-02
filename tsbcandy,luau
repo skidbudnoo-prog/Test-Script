@@ -1,7 +1,7 @@
+
 --[[
     AXOMJB - HALLOWEEN AUTOFARM
-    Door Farming + Nearby Candy + Zombie Combat
-    Tree Facing + Optimization + Server Hop
+    GUI EDITION 🎃
 
     YouTube: https://youtube.com/@axos0022
     Discord: https://discord.gg/QAhCXgaDZg
@@ -9,35 +9,40 @@
 
 local Env = (getgenv and getgenv()) or _G
 
---// LOADER SETTINGS
-local AutoExecute = Env.AutoExecute
-if AutoExecute == nil then AutoExecute = true end
-
-local AutoHop = Env.AutoHop
-if AutoHop == nil then AutoHop = false end
-
-local KillZombies = Env.KillZombies
-if KillZombies == nil then KillZombies = true end
-
 --// SERVICES
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
+local CoreGui = game:GetService("CoreGui")
 
 local Player = Players.LocalPlayer
 
 --// SETTINGS
-local HOLD_TIME = 0
-local OPEN_WAIT = 3
-local RECOVERY_WAIT = 2
-local CANDY_WAIT = 0.5
-local CANDY_SCAN_RADIUS = 100
-local TREE_SWITCH_WAIT = 0.3
+local SETTINGS = {
+    HoldTime = 0,
+    OpenWait = 3,
+    RecoveryWait = 2,
+    CandyWait = 0.5,
+
+    CandyRadius = 100,
+    TreeSwitchWait = 0.3,
+
+    CandyFarm = true,
+    KillZombies = true,
+    AutoHop = false
+}
+
 local DOOR_PATTERN = "^DOOR%s*%d+%s+NEW$"
 
---// CANDY NAMES
+--// RUNTIME
+local Running = false
+local CandyCount = 0
+local StartTime = 0
+local ElapsedTime = 0
+local WorkerId = 0
+
 local CandyNames = {
     BloxRoll = true,
     BloxyDrops = true,
@@ -62,6 +67,13 @@ local function getRoot()
     return getCharacter():WaitForChild("HumanoidRootPart")
 end
 
+local function isAlive()
+    local humanoid =
+        getCharacter():FindFirstChildWhichIsA("Humanoid")
+
+    return humanoid ~= nil and humanoid.Health > 0
+end
+
 local function getPart(object)
     if not object then
         return nil
@@ -79,13 +91,6 @@ local function getPart(object)
     return object:FindFirstChildWhichIsA("BasePart", true)
 end
 
-local function isAlive()
-    local humanoid =
-        getCharacter():FindFirstChildWhichIsA("Humanoid")
-
-    return humanoid ~= nil and humanoid.Health > 0
-end
-
 --// TELEPORT
 local function teleportTo(object)
     local part = getPart(object)
@@ -94,55 +99,14 @@ local function teleportTo(object)
         return false
     end
 
-    local success = pcall(function()
+    return pcall(function()
         getCharacter():PivotTo(
             CFrame.new(part.Position + Vector3.new(0, 2, 0))
         )
     end)
-
-    if not success then
-        return false
-    end
-
-    task.wait(CANDY_WAIT)
-    return true
 end
 
---// FACE TREE
-local function faceTree(door)
-    local part = getPart(door)
-
-    if not part then
-        return false
-    end
-
-    local success = pcall(function()
-        local root = getRoot()
-        local target = part.Position
-
-        root.CFrame = CFrame.lookAt(
-            root.Position,
-            Vector3.new(
-                target.X,
-                root.Position.Y,
-                target.Z
-            )
-        )
-
-        local camera = Workspace.CurrentCamera
-
-        if camera then
-            camera.CFrame = CFrame.lookAt(
-                camera.CFrame.Position,
-                target
-            )
-        end
-    end)
-
-    return success
-end
-
---// INSTANT PROXIMITY PROMPT ATTEMPT
+--// PROMPT INTERACTION
 local function interact(object)
     local prompt = object:FindFirstChildWhichIsA(
         "ProximityPrompt",
@@ -154,11 +118,11 @@ local function interact(object)
             or fireproximityprompt
 
         if type(firePrompt) == "function" then
-            local fired = pcall(function()
+            local success = pcall(function()
                 firePrompt(prompt)
             end)
 
-            if fired then
+            if success then
                 return true
             end
         end
@@ -173,23 +137,16 @@ local function interact(object)
         end
     end
 
-    --// KEYBOARD FALLBACK
-    local pressed = pcall(function()
+    local success = pcall(function()
         VirtualInputManager:SendKeyEvent(
             true,
             Enum.KeyCode.E,
             false,
             game
         )
-    end)
 
-    if not pressed then
-        return false
-    end
+        task.wait(0)
 
-    task.wait(0)
-
-    pcall(function()
         VirtualInputManager:SendKeyEvent(
             false,
             Enum.KeyCode.E,
@@ -198,10 +155,32 @@ local function interact(object)
         )
     end)
 
-    return true
+    return success
 end
 
---// FIND HALLOWEEN DOORS
+--// FACE TREE
+local function faceTree(door)
+    local part = getPart(door)
+
+    if not part then
+        return
+    end
+
+    pcall(function()
+        local root = getRoot()
+
+        root.CFrame = CFrame.lookAt(
+            root.Position,
+            Vector3.new(
+                part.Position.X,
+                root.Position.Y,
+                part.Position.Z
+            )
+        )
+    end)
+end
+
+--// FIND DOORS
 local function getDoors()
     local folder =
         Workspace:FindFirstChild("HalloweenDoorTrees")
@@ -228,16 +207,15 @@ local function getDoors()
     end
 
     table.sort(doors, function(a, b)
-        local aNumber = tonumber(a.Name:match("%d+")) or 0
-        local bNumber = tonumber(b.Name:match("%d+")) or 0
-
-        return aNumber < bNumber
+        local an = tonumber(a.Name:match("%d+")) or 0
+        local bn = tonumber(b.Name:match("%d+")) or 0
+        return an < bn
     end)
 
     return doors
 end
 
---// FIND ONLY NAMED CANDIES NEAR PLAYER
+--// FIND NEARBY CANDY
 local function getCandies()
     local candies = {}
     local root = getRoot()
@@ -246,7 +224,7 @@ local function getCandies()
         return candies
     end
 
-    local playerPosition = root.Position
+    local position = root.Position
 
     for _, object in ipairs(Workspace:GetDescendants()) do
         if CandyNames[object.Name] then
@@ -254,9 +232,9 @@ local function getCandies()
 
             if part then
                 local distance =
-                    (part.Position - playerPosition).Magnitude
+                    (part.Position - position).Magnitude
 
-                if distance <= CANDY_SCAN_RADIUS then
+                if distance <= SETTINGS.CandyRadius then
                     table.insert(candies, {
                         Object = object,
                         Distance = distance
@@ -270,48 +248,36 @@ local function getCandies()
         return a.Distance < b.Distance
     end)
 
-    print("[CandyFarm] Nearby candy found:", #candies)
-
     return candies
 end
 
---// COLLECT NEARBY CANDIES
+--// COLLECT CANDY
 local function collectCandy()
+    if not SETTINGS.CandyFarm or not Running then
+        return
+    end
+
     local candies = getCandies()
 
     for _, entry in ipairs(candies) do
-        if not isAlive() then
+        if not Running or not isAlive() then
             return
         end
 
         local candy = entry.Object
 
         if candy and candy:IsDescendantOf(Workspace) then
-            local part = getPart(candy)
+            teleportTo(candy)
+            task.wait(SETTINGS.CandyWait)
 
-            if part then
-                print(
-                    "[CandyFarm] Nearby:",
-                    candy.Name,
-                    "Distance:",
-                    math.floor(entry.Distance)
-                )
-
-                pcall(function()
-                    getCharacter():PivotTo(
-                        CFrame.new(
-                            part.Position + Vector3.new(0, 2, 0)
-                        )
-                    )
-                end)
-
-                task.wait(CANDY_WAIT)
+            if not candy:IsDescendantOf(Workspace) then
+                CandyCount = CandyCount + 1
             end
         end
     end
 end
 
---// FIND HALLOWEEN ZOMBIES
+--// FIND ZOMBIES
 local function getZombies()
     local zombies = {}
 
@@ -333,12 +299,12 @@ end
 
 --// ZOMBIE ATTACK
 local function attackZombies()
-    if not KillZombies then
+    if not SETTINGS.KillZombies or not Running then
         return
     end
 
     for _, zombie in ipairs(getZombies()) do
-        if not isAlive() then
+        if not Running or not isAlive() then
             return
         end
 
@@ -362,7 +328,7 @@ local function attackZombies()
 
             if tool then
                 for _ = 1, 5 do
-                    if not zombie.Parent then
+                    if not Running or not zombie.Parent then
                         break
                     end
 
@@ -383,7 +349,7 @@ end
 
 --// SERVER HOP
 local function serverHop()
-    if not AutoHop then
+    if not SETTINGS.AutoHop then
         return false
     end
 
@@ -394,7 +360,6 @@ local function serverHop()
         or http_request
 
     if type(requestFunction) ~= "function" then
-        warn("[ServerHop] HTTP request unavailable")
         return false
     end
 
@@ -411,14 +376,10 @@ local function serverHop()
     end)
 
     if not success or not response then
-        warn("[ServerHop] Could not retrieve servers")
         return false
     end
 
-    local status = response.StatusCode or response.Status
-
-    if status ~= 200 then
-        warn("[ServerHop] HTTP status:", status)
+    if (response.StatusCode or response.Status) ~= 200 then
         return false
     end
 
@@ -426,8 +387,7 @@ local function serverHop()
         return HttpService:JSONDecode(response.Body)
     end)
 
-    if not decodedSuccess or type(decoded) ~= "table" then
-        warn("[ServerHop] Invalid server response")
+    if not decodedSuccess then
         return false
     end
 
@@ -437,7 +397,7 @@ local function serverHop()
             and server.maxPlayers
             and server.playing < server.maxPlayers then
 
-            local teleportSuccess = pcall(function()
+            local teleported = pcall(function()
                 TeleportService:TeleportToPlaceInstance(
                     game.PlaceId,
                     server.id,
@@ -445,55 +405,20 @@ local function serverHop()
                 )
             end)
 
-            if teleportSuccess then
-                print("[ServerHop] Joining another server")
+            if teleported then
                 return true
             end
         end
     end
 
-    warn("[ServerHop] No available server found")
     return false
 end
 
---// OPTIMIZATION SCRIPTS
-local function loadOptimization(url, name)
-    if type(loadstring) ~= "function" then
-        warn("[Optimization] loadstring unavailable")
-        return
-    end
-
-    local success, err = pcall(function()
-        local source = game:HttpGet(url)
-        local compiled = loadstring(source)
-
-        if not compiled then
-            error("Failed to compile " .. name)
-        end
-
-        compiled()
-    end)
-
-    if not success then
-        warn("[Optimization] " .. name .. ": " .. tostring(err))
-    end
-end
-
-task.spawn(function()
-    loadOptimization(
-        "https://raw.githubusercontent.com/SkibidiFart123patapim/OpenSource/refs/heads/main/FixLag.luau",
-        "FixLag"
-    )
-
-    loadOptimization(
-        "https://raw.githubusercontent.com/SkibidiFart123patapim/OpenSource/refs/heads/main/NoRender.luau",
-        "NoRender"
-    )
-end)
-
 --// FARM ONE TREE
 local function farmDoor(door)
-    if not door or not door:IsDescendantOf(Workspace) then
+    if not Running
+        or not door
+        or not door:IsDescendantOf(Workspace) then
         return
     end
 
@@ -501,69 +426,523 @@ local function farmDoor(door)
         return
     end
 
-    local part = getPart(door)
-
-    if not part then
+    if not teleportTo(door) then
         return
     end
 
-    print("[HalloweenFarm] Farming:", door.Name)
-
-    teleportTo(door)
     faceTree(door)
-
     task.wait(0.4)
 
+    if not Running then
+        return
+    end
+
     interact(door)
+    task.wait(SETTINGS.OpenWait)
 
-    task.wait(OPEN_WAIT)
-
-    collectCandy()
-    attackZombies()
-end
-
---// MAIN FARM LOOP
-print("[AxomJB] Halloween Autofarm Started")
-print("[AxomJB] AutoExecute:", AutoExecute)
-print("[AxomJB] AutoHop:", AutoHop)
-print("[AxomJB] KillZombies:", KillZombies)
-
-while true do
-    local success, err = pcall(function()
+    if SETTINGS.CandyFarm then
         collectCandy()
+    end
 
-        local doors = getDoors()
-
-        if #doors == 0 then
-            warn("[HalloweenFarm] No doors found")
-            task.wait(RECOVERY_WAIT)
-            return
-        end
-
-        print("[HalloweenFarm] Doors found:", #doors)
-
-        for _, door in ipairs(doors) do
-            if not isAlive() then
-                task.wait(RECOVERY_WAIT)
-                return
-            end
-
-            if door and door:IsDescendantOf(Workspace) then
-                farmDoor(door)
-            end
-
-            --// TREE SWITCH DELAY: 0.3 SECONDS
-            task.wait(TREE_SWITCH_WAIT)
-        end
-
-        if AutoHop then
-            serverHop()
-            task.wait(RECOVERY_WAIT)
-        end
-    end)
-
-    if not success then
-        warn("[HalloweenFarm] Error:", tostring(err))
-        task.wait(RECOVERY_WAIT)
+    if SETTINGS.KillZombies then
+        attackZombies()
     end
 end
+
+--==================================================
+-- GUI
+--==================================================
+
+local oldGui = nil
+
+pcall(function()
+    oldGui = CoreGui:FindFirstChild("AxomJB_Halloween")
+end)
+
+if oldGui then
+    oldGui:Destroy()
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "AxomJB_Halloween"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+local parentSuccess = pcall(function()
+    ScreenGui.Parent = CoreGui
+end)
+
+if not parentSuccess or not ScreenGui.Parent then
+    ScreenGui.Parent = Player:WaitForChild("PlayerGui")
+end
+
+local function create(class, properties, parent)
+    local object = Instance.new(class)
+
+    for property, value in pairs(properties) do
+        object[property] = value
+    end
+
+    object.Parent = parent
+    return object
+end
+
+--// COLORS
+local ORANGE = Color3.fromRGB(255, 115, 35)
+local DARK = Color3.fromRGB(19, 15, 24)
+local PANEL = Color3.fromRGB(30, 23, 37)
+local LIGHT = Color3.fromRGB(245, 235, 225)
+local MUTED = Color3.fromRGB(165, 150, 165)
+local GREEN = Color3.fromRGB(90, 220, 125)
+local RED = Color3.fromRGB(245, 80, 80)
+
+--// MAIN WINDOW
+local Main = create("Frame", {
+    Name = "Main",
+    Size = UDim2.fromOffset(440, 390),
+    Position = UDim2.new(0.5, -220, 0.5, -195),
+    BackgroundColor3 = DARK,
+    BorderSizePixel = 0,
+    Active = true,
+    Draggable = true
+}, ScreenGui)
+
+create("UICorner", {
+    CornerRadius = UDim.new(0, 12)
+}, Main)
+
+create("UIStroke", {
+    Color = ORANGE,
+    Thickness = 1.5,
+    Transparency = 0.15
+}, Main)
+
+--// HEADER
+local Header = create("Frame", {
+    Size = UDim2.new(1, 0, 0, 76),
+    BackgroundColor3 = PANEL,
+    BorderSizePixel = 0
+}, Main)
+
+create("UICorner", {
+    CornerRadius = UDim.new(0, 12)
+}, Header)
+
+create("Frame", {
+    Position = UDim2.new(0, 0, 1, -12),
+    Size = UDim2.new(1, 0, 0, 12),
+    BackgroundColor3 = PANEL,
+    BorderSizePixel = 0
+}, Header)
+
+create("ImageLabel", {
+    Size = UDim2.fromOffset(52, 52),
+    Position = UDim2.fromOffset(13, 12),
+    BackgroundTransparency = 1,
+    Image = "rbxassetid://108275708321017",
+    ScaleType = Enum.ScaleType.Fit
+}, Header)
+
+create("TextLabel", {
+    Position = UDim2.fromOffset(75, 13),
+    Size = UDim2.new(1, -130, 0, 27),
+    BackgroundTransparency = 1,
+    Text = "AXOMJB HALLOWEEN",
+    TextColor3 = ORANGE,
+    Font = Enum.Font.GothamBlack,
+    TextSize = 17,
+    TextXAlignment = Enum.TextXAlignment.Left
+}, Header)
+
+create("TextLabel", {
+    Position = UDim2.fromOffset(76, 41),
+    Size = UDim2.new(1, -130, 0, 18),
+    BackgroundTransparency = 1,
+    Text = "AUTOFARM  •  🎃 EDITION",
+    TextColor3 = MUTED,
+    Font = Enum.Font.GothamBold,
+    TextSize = 10,
+    TextXAlignment = Enum.TextXAlignment.Left
+}, Header)
+
+local Minimize = create("TextButton", {
+    Size = UDim2.fromOffset(32, 32),
+    Position = UDim2.new(1, -43, 0, 19),
+    BackgroundColor3 = Color3.fromRGB(65, 45, 70),
+    Text = "—",
+    TextColor3 = LIGHT,
+    Font = Enum.Font.GothamBold,
+    TextSize = 18,
+    BorderSizePixel = 0
+}, Header)
+
+create("UICorner", {
+    CornerRadius = UDim.new(0, 8)
+}, Minimize)
+
+--// CONTENT
+local Content = create("Frame", {
+    Position = UDim2.fromOffset(14, 88),
+    Size = UDim2.new(1, -28, 1, -102),
+    BackgroundTransparency = 1
+}, Main)
+
+--// STAT CARDS
+local Stats = create("Frame", {
+    Size = UDim2.new(1, 0, 0, 75),
+    BackgroundTransparency = 1
+}, Content)
+
+local function makeStat(title, value, x)
+    local card = create("Frame", {
+        Position = UDim2.new(x, 0, 0, 0),
+        Size = UDim2.new(0.48, -4, 1, 0),
+        BackgroundColor3 = PANEL,
+        BorderSizePixel = 0
+    }, Stats)
+
+    create("UICorner", {
+        CornerRadius = UDim.new(0, 9)
+    }, card)
+
+    create("TextLabel", {
+        Position = UDim2.fromOffset(11, 10),
+        Size = UDim2.new(1, -20, 0, 18),
+        BackgroundTransparency = 1,
+        Text = title,
+        TextColor3 = MUTED,
+        Font = Enum.Font.GothamBold,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Left
+    }, card)
+
+    return create("TextLabel", {
+        Position = UDim2.fromOffset(11, 31),
+        Size = UDim2.new(1, -20, 0, 29),
+        BackgroundTransparency = 1,
+        Text = value,
+        TextColor3 = ORANGE,
+        Font = Enum.Font.GothamBlack,
+        TextSize = 21,
+        TextXAlignment = Enum.TextXAlignment.Left
+    }, card)
+end
+
+local CandyLabel = makeStat("🍬 CANDY FARMED", "0", 0)
+local TimerLabel = makeStat("⏱ SESSION TIMER", "00:00", 0.52)
+
+--// STATUS
+local StatusLabel = create("TextLabel", {
+    Position = UDim2.fromOffset(2, 83),
+    Size = UDim2.new(1, -4, 0, 25),
+    BackgroundTransparency = 1,
+    Text = "● STOPPED",
+    TextColor3 = RED,
+    Font = Enum.Font.GothamBold,
+    TextSize = 11,
+    TextXAlignment = Enum.TextXAlignment.Left
+}, Content)
+
+local function makeButton(text, position, size, color)
+    local button = create("TextButton", {
+        Position = position,
+        Size = size,
+        BackgroundColor3 = color,
+        Text = text,
+        TextColor3 = LIGHT,
+        Font = Enum.Font.GothamBold,
+        TextSize = 12,
+        BorderSizePixel = 0,
+        AutoButtonColor = true
+    }, Content)
+
+    create("UICorner", {
+        CornerRadius = UDim.new(0, 8)
+    }, button)
+
+    return button
+end
+
+--// START / STOP BUTTONS
+local StartButton = makeButton(
+    "▶ START AUTOFARM",
+    UDim2.fromOffset(0, 112),
+    UDim2.new(0.5, -5, 0, 36),
+    Color3.fromRGB(45, 130, 70)
+)
+
+local StopButton = makeButton(
+    "■ STOP",
+    UDim2.new(0.5, 5, 0, 112),
+    UDim2.new(0.5, -5, 0, 36),
+    Color3.fromRGB(145, 48, 48)
+)
+
+--// THREE OPTIONAL TOGGLES ONLY
+local function makeToggle(text, setting, position)
+    local button = makeButton(
+        "",
+        position,
+        UDim2.new(0.5, -5, 0, 34),
+        PANEL
+    )
+
+    local function update()
+        local enabled = SETTINGS[setting]
+
+        button.Text = (enabled and "✓  " or "○  ") .. text
+        button.TextColor3 = enabled and GREEN or MUTED
+    end
+
+    button.MouseButton1Click:Connect(function()
+        SETTINGS[setting] = not SETTINGS[setting]
+        update()
+    end)
+
+    update()
+    return button
+end
+
+makeToggle(
+    "Candy Farm",
+    "CandyFarm",
+    UDim2.fromOffset(0, 157)
+)
+
+makeToggle(
+    "Zombie Kill",
+    "KillZombies",
+    UDim2.new(0.5, 5, 0, 157)
+)
+
+makeToggle(
+    "AutoHop",
+    "AutoHop",
+    UDim2.fromOffset(0, 199)
+)
+
+--// SETTINGS INPUTS
+local function makeInput(title, default, position)
+    local holder = create("Frame", {
+        Position = position,
+        Size = UDim2.new(0.5, -5, 0, 48),
+        BackgroundColor3 = PANEL,
+        BorderSizePixel = 0
+    }, Content)
+
+    create("UICorner", {
+        CornerRadius = UDim.new(0, 8)
+    }, holder)
+
+    create("TextLabel", {
+        Position = UDim2.fromOffset(8, 4),
+        Size = UDim2.new(1, -16, 0, 15),
+        BackgroundTransparency = 1,
+        Text = title,
+        TextColor3 = MUTED,
+        Font = Enum.Font.GothamBold,
+        TextSize = 9,
+        TextXAlignment = Enum.TextXAlignment.Left
+    }, holder)
+
+    local input = create("TextBox", {
+        Position = UDim2.fromOffset(8, 20),
+        Size = UDim2.new(1, -16, 0, 23),
+        BackgroundColor3 = DARK,
+        Text = tostring(default),
+        TextColor3 = LIGHT,
+        Font = Enum.Font.GothamBold,
+        TextSize = 12,
+        ClearTextOnFocus = false,
+        BorderSizePixel = 0
+    }, holder)
+
+    create("UICorner", {
+        CornerRadius = UDim.new(0, 5)
+    }, input)
+
+    return input
+end
+
+local RadiusInput = makeInput(
+    "CANDY RADIUS (STUDS)",
+    SETTINGS.CandyRadius,
+    UDim2.fromOffset(0, 242)
+)
+
+local DelayInput = makeInput(
+    "TREE SWITCH DELAY (SECONDS)",
+    SETTINGS.TreeSwitchWait,
+    UDim2.new(0.5, 5, 0, 242)
+)
+
+RadiusInput.FocusLost:Connect(function()
+    local value = tonumber(RadiusInput.Text)
+
+    if value then
+        SETTINGS.CandyRadius = math.clamp(value, 10, 1000)
+    end
+
+    RadiusInput.Text = tostring(SETTINGS.CandyRadius)
+end)
+
+DelayInput.FocusLost:Connect(function()
+    local value = tonumber(DelayInput.Text)
+
+    if value then
+        SETTINGS.TreeSwitchWait = math.clamp(value, 0, 10)
+    end
+
+    DelayInput.Text = tostring(SETTINGS.TreeSwitchWait)
+end)
+
+--// DISCORD COPY BUTTON
+local DiscordButton = makeButton(
+    "COPY DISCORD INVITE",
+    UDim2.fromOffset(0, 301),
+    UDim2.new(1, 0, 0, 32),
+    Color3.fromRGB(83, 55, 125)
+)
+
+DiscordButton.MouseButton1Click:Connect(function()
+    local copyFunction = Env.setclipboard
+        or setclipboard
+        or toclipboard
+
+    if type(copyFunction) == "function" then
+        local success = pcall(function()
+            copyFunction("https://discord.gg/9hprFqdhBq")
+        end)
+
+        DiscordButton.Text = success
+            and "✓ COPIED DISCORD INVITE"
+            or "COPY FAILED"
+    else
+        DiscordButton.Text = "CLIPBOARD NOT SUPPORTED"
+    end
+
+    task.delay(2, function()
+        if DiscordButton and DiscordButton.Parent then
+            DiscordButton.Text = "COPY DISCORD INVITE"
+        end
+    end)
+end)
+
+--// MINIMIZE
+local minimized = false
+
+Minimize.MouseButton1Click:Connect(function()
+    minimized = not minimized
+
+    Content.Visible = not minimized
+
+    Main.Size = minimized
+        and UDim2.fromOffset(440, 76)
+        or UDim2.fromOffset(440, 390)
+
+    Minimize.Text = minimized and "+" or "—"
+end)
+
+--// TIMER
+local function formatTime(seconds)
+    seconds = math.max(0, math.floor(seconds))
+
+    local minutes = math.floor(seconds / 60)
+    local remaining = seconds % 60
+
+    return string.format("%02d:%02d", minutes, remaining)
+end
+
+local function setStatus(text, color)
+    StatusLabel.Text = "● " .. string.upper(text)
+    StatusLabel.TextColor3 = color
+end
+
+--// START AUTOFARM
+local function startFarm()
+    if Running then
+        return
+    end
+
+    Running = true
+    WorkerId = WorkerId + 1
+
+    local thisWorker = WorkerId
+
+    StartTime = os.clock() - ElapsedTime
+    setStatus("RUNNING", GREEN)
+
+    task.spawn(function()
+        while Running and WorkerId == thisWorker do
+            local success = pcall(function()
+                if not isAlive() then
+                    task.wait(SETTINGS.RecoveryWait)
+                    return
+                end
+
+                -- Candy collection is optional.
+                if SETTINGS.CandyFarm then
+                    collectCandy()
+                end
+
+                -- Tree farming always runs while Autofarm is started.
+                local doors = getDoors()
+
+                for _, door in ipairs(doors) do
+                    if not Running or WorkerId ~= thisWorker then
+                        break
+                    end
+
+                    if door and door:IsDescendantOf(Workspace) then
+                        farmDoor(door)
+                    end
+
+                    -- Default tree switching delay: 0.3 seconds.
+                    task.wait(SETTINGS.TreeSwitchWait)
+                end
+
+                -- AutoHop is optional.
+                if SETTINGS.AutoHop and Running then
+                    serverHop()
+                    task.wait(SETTINGS.RecoveryWait)
+                end
+            end)
+
+            if not success then
+                task.wait(SETTINGS.RecoveryWait)
+            end
+
+            task.wait(0.1)
+        end
+    end)
+end
+
+--// STOP AUTOFARM
+local function stopFarm()
+    if not Running then
+        return
+    end
+
+    Running = false
+    ElapsedTime = os.clock() - StartTime
+    setStatus("STOPPED", RED)
+end
+
+StartButton.MouseButton1Click:Connect(startFarm)
+StopButton.MouseButton1Click:Connect(stopFarm)
+
+--// LIVE GUI UPDATES
+task.spawn(function()
+    while ScreenGui.Parent do
+        if Running then
+            ElapsedTime = os.clock() - StartTime
+        end
+
+        CandyLabel.Text = tostring(CandyCount)
+        TimerLabel.Text = formatTime(ElapsedTime)
+
+        task.wait(0.5)
+    end
+end)
+
+setStatus("STOPPED", RED)
