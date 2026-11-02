@@ -1,10 +1,11 @@
+
 --// AXOMJB - HALLOWEEN AUTOFARM
---// Main GitHub Script
---// Door Farming + HalloweenCandy + Optional Zombies + Server Hop
+--// Door Farming + Candys Search + Zombie Combat
+--// Tree Facing + Optimization + Server Hop
 
 local Env = (getgenv and getgenv()) or _G
 
---// READ LOADER SETTINGS (DO NOT EDIT THESE IN THE MAIN SCRIPT)
+--// LOADER CONFIGURATION
 local AutoExecute = Env.AutoExecute
 if AutoExecute == nil then AutoExecute = true end
 
@@ -27,8 +28,7 @@ local Player = Players.LocalPlayer
 local HOLD_TIME = 4.5
 local OPEN_WAIT = 3
 local RECOVERY_WAIT = 2
-local CANDY_FOLDER = "HalloweenCandy"
-
+local CANDY_NAME = "Candys"
 local DOOR_PATTERN = "^DOOR%s*%d+%s+NEW$"
 
 --// CHARACTER
@@ -58,10 +58,10 @@ local function getPart(object)
 end
 
 local function isAlive()
-    local character = getCharacter()
-    local humanoid = character:FindFirstChildWhichIsA("Humanoid")
+    local humanoid =
+        getCharacter():FindFirstChildWhichIsA("Humanoid")
 
-    return humanoid and humanoid.Health > 0
+    return humanoid ~= nil and humanoid.Health > 0
 end
 
 --// TELEPORT
@@ -73,7 +73,7 @@ local function teleportTo(object)
 
     local success = pcall(function()
         getCharacter():PivotTo(
-            part.CFrame * CFrame.new(0, 3, 0)
+            part.CFrame * CFrame.new(0, 2, 4)
         )
     end)
 
@@ -85,7 +85,31 @@ local function teleportTo(object)
     return true
 end
 
---// DOOR INTERACTION
+--// FACE TREE / DOOR
+local function faceTree(door)
+    local part = getPart(door)
+    if not part then
+        return false
+    end
+
+    local success = pcall(function()
+        local root = getRoot()
+        local target = part.Position
+
+        root.CFrame = CFrame.lookAt(
+            root.Position,
+            Vector3.new(
+                target.X,
+                root.Position.Y,
+                target.Z
+            )
+        )
+    end)
+
+    return success
+end
+
+--// HOLD E
 local function interact(object)
     local prompt = object:FindFirstChildWhichIsA(
         "ProximityPrompt",
@@ -93,14 +117,21 @@ local function interact(object)
     )
 
     if prompt and prompt.Enabled then
+        local began = false
+
         local success = pcall(function()
             prompt:InputHoldBegin()
-            task.wait(math.max(HOLD_TIME, prompt.HoldDuration))
+            began = true
+
+            task.wait(
+                math.max(HOLD_TIME, prompt.HoldDuration)
+            )
+
             prompt:InputHoldEnd()
         end)
 
-        if success then
-            return true
+        if began then
+            return success
         end
     end
 
@@ -132,14 +163,18 @@ local function interact(object)
     return true
 end
 
---// FIND DOORS
+--// FIND HALLOWEEN DOORS
 local function getDoors()
-    local folder = Workspace:FindFirstChild("HalloweenDoorTrees")
+    local folder =
+        Workspace:FindFirstChild("HalloweenDoorTrees")
+
     if not folder then
         return {}
     end
 
-    local template = folder:FindFirstChild("DoorTreeTemplate")
+    local template =
+        folder:FindFirstChild("DoorTreeTemplate")
+
     if not template then
         return {}
     end
@@ -147,7 +182,9 @@ local function getDoors()
     local doors = {}
 
     for _, object in ipairs(template:GetDescendants()) do
-        if object.Name:match(DOOR_PATTERN) and getPart(object) then
+        if object.Name:match(DOOR_PATTERN)
+            and getPart(object) then
+
             table.insert(doors, object)
         end
     end
@@ -155,29 +192,36 @@ local function getDoors()
     return doors
 end
 
---// FIND CANDY
+--// FIND CANDYS ANYWHERE IN WORKSPACE
 local function getCandies()
-    local folder = Workspace:FindFirstChild(CANDY_FOLDER)
-
-    if not folder then
-        warn("[CandyFarm] HalloweenCandy folder not found")
-        return {}
-    end
-
     local candies = {}
+    local seen = {}
 
-    for _, object in ipairs(folder:GetChildren()) do
-        if getPart(object) then
-            table.insert(candies, object)
+    for _, object in ipairs(Workspace:GetDescendants()) do
+        if object.Name:lower() == CANDY_NAME:lower() then
+            local part = getPart(object)
+
+            if part and not seen[part] then
+                seen[part] = true
+                table.insert(candies, object)
+            end
         end
     end
+
+    print("[CandyFarm] Found", #candies, "Candys objects")
 
     return candies
 end
 
---// COLLECT CANDY
+--// COLLECT CANDYS
 local function collectCandy()
+    -- Refresh the list every time this function runs.
     local candies = getCandies()
+
+    if #candies == 0 then
+        warn("[CandyFarm] No objects named Candys found")
+        return
+    end
 
     for _, candy in ipairs(candies) do
         if not isAlive() then
@@ -189,20 +233,24 @@ local function collectCandy()
         end
 
         local part = getPart(candy)
+
         if not part then
             continue
         end
 
         local success = pcall(function()
             getCharacter():PivotTo(
-                CFrame.new(part.Position + Vector3.new(0, 3, 0))
+                CFrame.new(
+                    part.Position + Vector3.new(0, 2, 0)
+                )
             )
         end)
 
         if success then
+            print("[CandyFarm] Teleported to:", candy:GetFullName())
             task.wait(1)
 
-            -- Give the game time to register the pickup.
+            -- Check whether the object disappeared after pickup.
             if candy:IsDescendantOf(Workspace) then
                 task.wait(0.5)
             end
@@ -210,7 +258,7 @@ local function collectCandy()
     end
 end
 
---// FIND ZOMBIES
+--// FIND HALLOWEEN ZOMBIES
 local function getZombies()
     local zombies = {}
 
@@ -218,7 +266,8 @@ local function getZombies()
         if object.Name == "HalloweenZombie"
             and object:IsA("Model") then
 
-            local humanoid = object:FindFirstChildWhichIsA("Humanoid")
+            local humanoid =
+                object:FindFirstChildWhichIsA("Humanoid")
 
             if humanoid and humanoid.Health > 0 then
                 table.insert(zombies, object)
@@ -254,7 +303,8 @@ local function attackZombies()
                 target.Position
             )
 
-            local tool = character:FindFirstChildWhichIsA("Tool")
+            local tool =
+                character:FindFirstChildWhichIsA("Tool")
 
             if tool then
                 for _ = 1, 5 do
@@ -290,7 +340,7 @@ local function serverHop()
         or http_request
 
     if type(requestFunction) ~= "function" then
-        warn("[ServerHop] HTTP request function unavailable")
+        warn("[ServerHop] HTTP request unavailable")
         return false
     end
 
@@ -307,14 +357,14 @@ local function serverHop()
     end)
 
     if not success or not response then
-        warn("[ServerHop] Failed to retrieve server list")
+        warn("[ServerHop] Could not retrieve servers")
         return false
     end
 
-    local statusCode = response.StatusCode or response.Status
+    local status = response.StatusCode or response.Status
 
-    if statusCode ~= 200 then
-        warn("[ServerHop] HTTP status:", statusCode)
+    if status ~= 200 then
+        warn("[ServerHop] HTTP status:", status)
         return false
     end
 
@@ -323,7 +373,7 @@ local function serverHop()
     end)
 
     if not decodedSuccess or type(decoded) ~= "table" then
-        warn("[ServerHop] Could not decode server list")
+        warn("[ServerHop] Invalid server response")
         return false
     end
 
@@ -333,7 +383,7 @@ local function serverHop()
             and server.maxPlayers
             and server.playing < server.maxPlayers then
 
-            local teleportSuccess, teleportError = pcall(function()
+            local teleportSuccess = pcall(function()
                 TeleportService:TeleportToPlaceInstance(
                     game.PlaceId,
                     server.id,
@@ -342,10 +392,8 @@ local function serverHop()
             end)
 
             if teleportSuccess then
-                print("[ServerHop] Joining another server...")
+                print("[ServerHop] Joining another server")
                 return true
-            else
-                warn("[ServerHop] Teleport failed:", teleportError)
             end
         end
     end
@@ -366,7 +414,7 @@ local function loadOptimization(url, name)
         local compiled = loadstring(source)
 
         if not compiled then
-            error("Could not compile " .. name)
+            error("Failed to compile " .. name)
         end
 
         compiled()
@@ -399,30 +447,48 @@ local function farmDoor(door)
         return
     end
 
-    teleportTo(door)
-    task.wait(0.5)
+    local part = getPart(door)
+    if not part then
+        return
+    end
 
+    -- Move near the door/tree.
+    teleportTo(door)
+
+    -- Face the actual tree/door position.
+    faceTree(door)
+
+    task.wait(0.4)
+
+    -- Hold E while facing the tree.
     interact(door)
+
     task.wait(OPEN_WAIT)
 
+    -- Search the entire Workspace for Candys.
     collectCandy()
+
+    -- Optional zombie attack.
     attackZombies()
 end
 
---// MAIN LOOP
-print("[HalloweenFarm] Started")
-print("[HalloweenFarm] AutoExecute:", AutoExecute)
-print("[HalloweenFarm] AutoHop:", AutoHop)
-print("[HalloweenFarm] KillZombies:", KillZombies)
+--// MAIN FARM LOOP
+print("[AxomJB] Halloween Autofarm Started")
+print("[AxomJB] AutoExecute:", AutoExecute)
+print("[AxomJB] AutoHop:", AutoHop)
+print("[AxomJB] KillZombies:", KillZombies)
 
 while true do
     local success, err = pcall(function()
         local doors = getDoors()
 
         if #doors == 0 then
+            warn("[HalloweenFarm] No doors found")
             task.wait(RECOVERY_WAIT)
             return
         end
+
+        print("[HalloweenFarm] Doors found:", #doors)
 
         for _, door in ipairs(doors) do
             if not isAlive() then
@@ -437,7 +503,7 @@ while true do
             task.wait(0.3)
         end
 
-        -- Hop after finishing the current server's door list.
+        -- Hop after finishing this server's door list.
         if AutoHop then
             serverHop()
             task.wait(RECOVERY_WAIT)
