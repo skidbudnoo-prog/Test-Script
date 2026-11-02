@@ -1,7 +1,6 @@
-
 --[[
     AXOMJB - HALLOWEEN AUTOFARM
-    Door Farming + Named Candy Checker + Zombie Combat
+    Door Farming + Nearby Candy + Zombie Combat
     Tree Facing + Optimization + Server Hop
 
     YouTube: https://youtube.com/@axos0022
@@ -10,7 +9,7 @@
 
 local Env = (getgenv and getgenv()) or _G
 
---// GET LOADER SETTINGS
+--// LOADER SETTINGS
 local AutoExecute = Env.AutoExecute
 if AutoExecute == nil then AutoExecute = true end
 
@@ -30,10 +29,12 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 local Player = Players.LocalPlayer
 
 --// SETTINGS
-local HOLD_TIME = 4.5
+local HOLD_TIME = 0
 local OPEN_WAIT = 3
 local RECOVERY_WAIT = 2
 local CANDY_WAIT = 0.5
+local CANDY_SCAN_RADIUS = 100
+local TREE_SWITCH_WAIT = 0.3
 local DOOR_PATTERN = "^DOOR%s*%d+%s+NEW$"
 
 --// CANDY NAMES
@@ -107,7 +108,7 @@ local function teleportTo(object)
     return true
 end
 
---// FACE TREE / DOOR
+--// FACE TREE
 local function faceTree(door)
     local part = getPart(door)
 
@@ -141,7 +142,7 @@ local function faceTree(door)
     return success
 end
 
---// HOLD E
+--// INSTANT PROXIMITY PROMPT ATTEMPT
 local function interact(object)
     local prompt = object:FindFirstChildWhichIsA(
         "ProximityPrompt",
@@ -149,25 +150,30 @@ local function interact(object)
     )
 
     if prompt and prompt.Enabled then
-        local began = false
+        local firePrompt = Env.fireproximityprompt
+            or fireproximityprompt
+
+        if type(firePrompt) == "function" then
+            local fired = pcall(function()
+                firePrompt(prompt)
+            end)
+
+            if fired then
+                return true
+            end
+        end
 
         local success = pcall(function()
             prompt:InputHoldBegin()
-            began = true
-
-            task.wait(
-                math.max(HOLD_TIME, prompt.HoldDuration)
-            )
-
             prompt:InputHoldEnd()
         end)
 
-        if began then
-            return success
+        if success then
+            return true
         end
     end
 
-    -- Keyboard fallback
+    --// KEYBOARD FALLBACK
     local pressed = pcall(function()
         VirtualInputManager:SendKeyEvent(
             true,
@@ -181,7 +187,7 @@ local function interact(object)
         return false
     end
 
-    task.wait(HOLD_TIME)
+    task.wait(0)
 
     pcall(function()
         VirtualInputManager:SendKeyEvent(
@@ -231,49 +237,64 @@ local function getDoors()
     return doors
 end
 
---// FIND ALL 12 CANDY TYPES IN WORKSPACE
+--// FIND ONLY NAMED CANDIES NEAR PLAYER
 local function getCandies()
     local candies = {}
-    local seen = {}
+    local root = getRoot()
+
+    if not root then
+        return candies
+    end
+
+    local playerPosition = root.Position
 
     for _, object in ipairs(Workspace:GetDescendants()) do
         if CandyNames[object.Name] then
             local part = getPart(object)
 
-            if part and not seen[object] then
-                seen[object] = true
-                table.insert(candies, object)
+            if part then
+                local distance =
+                    (part.Position - playerPosition).Magnitude
+
+                if distance <= CANDY_SCAN_RADIUS then
+                    table.insert(candies, {
+                        Object = object,
+                        Distance = distance
+                    })
+                end
             end
         end
     end
 
-    print("[CandyFarm] Found", #candies, "matching candy objects")
+    table.sort(candies, function(a, b)
+        return a.Distance < b.Distance
+    end)
+
+    print("[CandyFarm] Nearby candy found:", #candies)
 
     return candies
 end
 
---// TELEPORT TO MATCHING CANDIES
+--// COLLECT NEARBY CANDIES
 local function collectCandy()
-    -- Refresh the candy list every time.
     local candies = getCandies()
 
-    if #candies == 0 then
-        print("[CandyFarm] No matching candy found.")
-        return
-    end
-
-    for _, candy in ipairs(candies) do
+    for _, entry in ipairs(candies) do
         if not isAlive() then
             return
         end
+
+        local candy = entry.Object
 
         if candy and candy:IsDescendantOf(Workspace) then
             local part = getPart(candy)
 
             if part then
                 print(
-                    "[CandyFarm] Teleporting to:",
-                    candy.Name
+                    "[CandyFarm] Nearby:",
+                    candy.Name,
+                    "Distance:",
+                    math.floor(entry.Distance)
                 )
 
                 pcall(function()
@@ -310,7 +331,7 @@ local function getZombies()
     return zombies
 end
 
---// BASIC ZOMBIE ATTACK
+--// ZOMBIE ATTACK
 local function attackZombies()
     if not KillZombies then
         return
@@ -470,7 +491,7 @@ task.spawn(function()
     )
 end)
 
---// FARM ONE DOOR
+--// FARM ONE TREE
 local function farmDoor(door)
     if not door or not door:IsDescendantOf(Workspace) then
         return
@@ -488,23 +509,16 @@ local function farmDoor(door)
 
     print("[HalloweenFarm] Farming:", door.Name)
 
-    -- Teleport near tree.
     teleportTo(door)
-
-    -- Face tree.
     faceTree(door)
 
     task.wait(0.4)
 
-    -- Hold E.
     interact(door)
 
     task.wait(OPEN_WAIT)
 
-    -- Check Workspace for all named candies after each tree.
     collectCandy()
-
-    -- Optional zombie attack.
     attackZombies()
 end
 
@@ -516,7 +530,6 @@ print("[AxomJB] KillZombies:", KillZombies)
 
 while true do
     local success, err = pcall(function()
-        -- Candy scan before tree farming.
         collectCandy()
 
         local doors = getDoors()
@@ -539,10 +552,10 @@ while true do
                 farmDoor(door)
             end
 
-            task.wait(0.3)
+            --// TREE SWITCH DELAY: 0.3 SECONDS
+            task.wait(TREE_SWITCH_WAIT)
         end
 
-        -- Hop after finishing this server's door list.
         if AutoHop then
             serverHop()
             task.wait(RECOVERY_WAIT)
