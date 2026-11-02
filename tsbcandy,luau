@@ -1,10 +1,16 @@
 
---// AXOMJB - HALLOWEEN AUTOFARM
---// Continuous Candy Scanner + Camera Facing + Door Farm
+--[[
+    AXOMJB - HALLOWEEN AUTOFARM
+    Door Farming + Named Candy Checker + Zombie Combat
+    Tree Facing + Optimization + Server Hop
+
+    YouTube: https://youtube.com/@axos0022
+    Discord: https://discord.gg/QAhCXgaDZg
+]]
 
 local Env = (getgenv and getgenv()) or _G
 
---// LOADER CONFIG
+--// GET LOADER SETTINGS
 local AutoExecute = Env.AutoExecute
 if AutoExecute == nil then AutoExecute = true end
 
@@ -20,7 +26,6 @@ local Workspace = game:GetService("Workspace")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
-local RunService = game:GetService("RunService")
 
 local Player = Players.LocalPlayer
 
@@ -28,12 +33,24 @@ local Player = Players.LocalPlayer
 local HOLD_TIME = 4.5
 local OPEN_WAIT = 3
 local RECOVERY_WAIT = 2
-local CANDY_NAME = "Candys"
-local CANDY_SCAN_INTERVAL = 2
+local CANDY_WAIT = 0.5
 local DOOR_PATTERN = "^DOOR%s*%d+%s+NEW$"
 
-local CandyScanning = true
-local CandyLoopRunning = false
+--// CANDY NAMES
+local CandyNames = {
+    BloxRoll = true,
+    BloxyDrops = true,
+    Chocoblox = true,
+    DarkOrangeCandy1 = true,
+    DarkOrangeCandy2 = true,
+    DarkOrangeCandy3 = true,
+    DarkOrangeCandy4 = true,
+    MrBloxBar = true,
+    OrangeCandy1 = true,
+    OrangeCandy2 = true,
+    OrangeCandy3 = true,
+    OrangeCandy4 = true
+}
 
 --// CHARACTER
 local function getCharacter()
@@ -45,7 +62,9 @@ local function getRoot()
 end
 
 local function getPart(object)
-    if not object then return nil end
+    if not object then
+        return nil
+    end
 
     if object:IsA("BasePart") then
         return object
@@ -69,48 +88,57 @@ end
 --// TELEPORT
 local function teleportTo(object)
     local part = getPart(object)
-    if not part then return false end
+
+    if not part then
+        return false
+    end
 
     local success = pcall(function()
         getCharacter():PivotTo(
-            part.CFrame * CFrame.new(0, 2, 4)
+            CFrame.new(part.Position + Vector3.new(0, 2, 0))
         )
     end)
 
-    if not success then return false end
+    if not success then
+        return false
+    end
 
-    task.wait(0.5)
+    task.wait(CANDY_WAIT)
     return true
 end
 
---// CAMERA FACING TREE
+--// FACE TREE / DOOR
 local function faceTree(door)
     local part = getPart(door)
-    if not part then return false end
 
-    local camera = Workspace.CurrentCamera
-    if not camera then return false end
+    if not part then
+        return false
+    end
 
-    local root = getRoot()
-    local target = part.Position
+    local success = pcall(function()
+        local root = getRoot()
+        local target = part.Position
 
-    -- Face character toward tree
-    pcall(function()
         root.CFrame = CFrame.lookAt(
             root.Position,
-            Vector3.new(target.X, root.Position.Y, target.Z)
+            Vector3.new(
+                target.X,
+                root.Position.Y,
+                target.Z
+            )
         )
+
+        local camera = Workspace.CurrentCamera
+
+        if camera then
+            camera.CFrame = CFrame.lookAt(
+                camera.CFrame.Position,
+                target
+            )
+        end
     end)
 
-    -- Face actual camera toward tree
-    pcall(function()
-        camera.CFrame = CFrame.lookAt(
-            camera.CFrame.Position,
-            target
-        )
-    end)
-
-    return true
+    return success
 end
 
 --// HOLD E
@@ -127,7 +155,9 @@ local function interact(object)
             prompt:InputHoldBegin()
             began = true
 
-            task.wait(math.max(HOLD_TIME, prompt.HoldDuration))
+            task.wait(
+                math.max(HOLD_TIME, prompt.HoldDuration)
+            )
 
             prompt:InputHoldEnd()
         end)
@@ -137,127 +167,130 @@ local function interact(object)
         end
     end
 
+    -- Keyboard fallback
     local pressed = pcall(function()
         VirtualInputManager:SendKeyEvent(
-            true, Enum.KeyCode.E, false, game
+            true,
+            Enum.KeyCode.E,
+            false,
+            game
         )
     end)
 
-    if not pressed then return false end
+    if not pressed then
+        return false
+    end
 
     task.wait(HOLD_TIME)
 
     pcall(function()
         VirtualInputManager:SendKeyEvent(
-            false, Enum.KeyCode.E, false, game
+            false,
+            Enum.KeyCode.E,
+            false,
+            game
         )
     end)
 
     return true
 end
 
---// FIND DOORS
+--// FIND HALLOWEEN DOORS
 local function getDoors()
-    local folder = Workspace:FindFirstChild("HalloweenDoorTrees")
-    if not folder then return {} end
+    local folder =
+        Workspace:FindFirstChild("HalloweenDoorTrees")
 
-    local template = folder:FindFirstChild("DoorTreeTemplate")
-    if not template then return {} end
+    if not folder then
+        return {}
+    end
+
+    local template =
+        folder:FindFirstChild("DoorTreeTemplate")
+
+    if not template then
+        return {}
+    end
 
     local doors = {}
 
     for _, object in ipairs(template:GetDescendants()) do
         if object.Name:match(DOOR_PATTERN)
             and getPart(object) then
+
             table.insert(doors, object)
         end
     end
 
     table.sort(doors, function(a, b)
-        local numA = tonumber(a.Name:match("%d+")) or 0
-        local numB = tonumber(b.Name:match("%d+")) or 0
-        return numA < numB
+        local aNumber = tonumber(a.Name:match("%d+")) or 0
+        local bNumber = tonumber(b.Name:match("%d+")) or 0
+
+        return aNumber < bNumber
     end)
 
     return doors
 end
 
---// FIND ALL CANDYS IN WORKSPACE
+--// FIND ALL 12 CANDY TYPES IN WORKSPACE
 local function getCandies()
     local candies = {}
     local seen = {}
 
     for _, object in ipairs(Workspace:GetDescendants()) do
-        if object.Name:lower() == CANDY_NAME:lower() then
+        if CandyNames[object.Name] then
             local part = getPart(object)
 
-            if part and not seen[part] then
-                seen[part] = true
+            if part and not seen[object] then
+                seen[object] = true
                 table.insert(candies, object)
             end
         end
     end
 
+    print("[CandyFarm] Found", #candies, "matching candy objects")
+
     return candies
 end
 
---// TELEPORT TO CANDY
+--// TELEPORT TO MATCHING CANDIES
 local function collectCandy()
+    -- Refresh the candy list every time.
     local candies = getCandies()
 
-    print("[CandyFarm] Found:", #candies)
+    if #candies == 0 then
+        print("[CandyFarm] No matching candy found.")
+        return
+    end
 
     for _, candy in ipairs(candies) do
-        if not isAlive() then return end
+        if not isAlive() then
+            return
+        end
 
-        if candy:IsDescendantOf(Workspace) then
+        if candy and candy:IsDescendantOf(Workspace) then
             local part = getPart(candy)
 
             if part then
+                print(
+                    "[CandyFarm] Teleporting to:",
+                    candy.Name
+                )
+
                 pcall(function()
                     getCharacter():PivotTo(
-                        CFrame.new(part.Position + Vector3.new(0, 2, 0))
+                        CFrame.new(
+                            part.Position + Vector3.new(0, 2, 0)
+                        )
                     )
                 end)
 
-                task.wait(1)
+                task.wait(CANDY_WAIT)
             end
         end
     end
 end
 
---// CONTINUOUS CANDY SCANNER
-local function startCandyScanner()
-    if CandyLoopRunning then return end
-    CandyLoopRunning = true
-
-    task.spawn(function()
-        while CandyScanning do
-            local success, err = pcall(function()
-                local candies = getCandies()
-
-                if #candies > 0 then
-                    print("[CandyScanner] Candy objects:", #candies)
-
-                    -- Only collect while not actively opening a door.
-                    if not Env._AxomFarmingDoor then
-                        collectCandy()
-                    end
-                end
-            end)
-
-            if not success then
-                warn("[CandyScanner]", tostring(err))
-            end
-
-            task.wait(CANDY_SCAN_INTERVAL)
-        end
-
-        CandyLoopRunning = false
-    end)
-end
-
---// ZOMBIES
+--// FIND HALLOWEEN ZOMBIES
 local function getZombies()
     local zombies = {}
 
@@ -277,15 +310,23 @@ local function getZombies()
     return zombies
 end
 
+--// BASIC ZOMBIE ATTACK
 local function attackZombies()
-    if not KillZombies then return end
+    if not KillZombies then
+        return
+    end
 
     for _, zombie in ipairs(getZombies()) do
-        if not isAlive() then return end
+        if not isAlive() then
+            return
+        end
 
         pcall(function()
             local target = getPart(zombie)
-            if not target then return end
+
+            if not target then
+                return
+            end
 
             local character = getCharacter()
             local root = getRoot()
@@ -295,11 +336,14 @@ local function attackZombies()
                 target.Position
             )
 
-            local tool = character:FindFirstChildWhichIsA("Tool")
+            local tool =
+                character:FindFirstChildWhichIsA("Tool")
 
             if tool then
                 for _ = 1, 5 do
-                    if not zombie.Parent then break end
+                    if not zombie.Parent then
+                        break
+                    end
 
                     local humanoid =
                         zombie:FindFirstChildWhichIsA("Humanoid")
@@ -318,13 +362,18 @@ end
 
 --// SERVER HOP
 local function serverHop()
-    if not AutoHop then return false end
+    if not AutoHop then
+        return false
+    end
 
     local requestFunction =
-        Env.request or Env.http_request or request or http_request
+        Env.request
+        or Env.http_request
+        or request
+        or http_request
 
     if type(requestFunction) ~= "function" then
-        warn("[ServerHop] HTTP unavailable")
+        warn("[ServerHop] HTTP request unavailable")
         return false
     end
 
@@ -341,12 +390,14 @@ local function serverHop()
     end)
 
     if not success or not response then
-        warn("[ServerHop] Request failed")
+        warn("[ServerHop] Could not retrieve servers")
         return false
     end
 
-    if (response.StatusCode or response.Status) ~= 200 then
-        warn("[ServerHop] HTTP error")
+    local status = response.StatusCode or response.Status
+
+    if status ~= 200 then
+        warn("[ServerHop] HTTP status:", status)
         return false
     end
 
@@ -354,8 +405,8 @@ local function serverHop()
         return HttpService:JSONDecode(response.Body)
     end)
 
-    if not decodedSuccess then
-        warn("[ServerHop] Invalid response")
+    if not decodedSuccess or type(decoded) ~= "table" then
+        warn("[ServerHop] Invalid server response")
         return false
     end
 
@@ -365,7 +416,7 @@ local function serverHop()
             and server.maxPlayers
             and server.playing < server.maxPlayers then
 
-            local successTeleport = pcall(function()
+            local teleportSuccess = pcall(function()
                 TeleportService:TeleportToPlaceInstance(
                     game.PlaceId,
                     server.id,
@@ -373,17 +424,18 @@ local function serverHop()
                 )
             end)
 
-            if successTeleport then
-                print("[ServerHop] Joining server")
+            if teleportSuccess then
+                print("[ServerHop] Joining another server")
                 return true
             end
         end
     end
 
+    warn("[ServerHop] No available server found")
     return false
 end
 
---// OPTIMIZATIONS
+--// OPTIMIZATION SCRIPTS
 local function loadOptimization(url, name)
     if type(loadstring) ~= "function" then
         warn("[Optimization] loadstring unavailable")
@@ -395,7 +447,7 @@ local function loadOptimization(url, name)
         local compiled = loadstring(source)
 
         if not compiled then
-            error("Compile failed")
+            error("Failed to compile " .. name)
         end
 
         compiled()
@@ -418,55 +470,64 @@ task.spawn(function()
     )
 end)
 
---// FARM DOOR
+--// FARM ONE DOOR
 local function farmDoor(door)
-    if not door or not door.Parent or not isAlive() then
+    if not door or not door:IsDescendantOf(Workspace) then
+        return
+    end
+
+    if not isAlive() then
         return
     end
 
     local part = getPart(door)
-    if not part then return end
 
-    Env._AxomFarmingDoor = true
+    if not part then
+        return
+    end
 
-    -- Move near tree
+    print("[HalloweenFarm] Farming:", door.Name)
+
+    -- Teleport near tree.
     teleportTo(door)
 
-    -- Turn camera toward tree
+    -- Face tree.
     faceTree(door)
 
-    task.wait(0.5)
+    task.wait(0.4)
 
-    -- Hold E
+    -- Hold E.
     interact(door)
 
     task.wait(OPEN_WAIT)
 
-    Env._AxomFarmingDoor = false
-
-    -- Refresh candy list after opening door
+    -- Check Workspace for all named candies after each tree.
     collectCandy()
 
-    -- Optional zombie combat
+    -- Optional zombie attack.
     attackZombies()
 end
 
---// START
+--// MAIN FARM LOOP
 print("[AxomJB] Halloween Autofarm Started")
+print("[AxomJB] AutoExecute:", AutoExecute)
 print("[AxomJB] AutoHop:", AutoHop)
 print("[AxomJB] KillZombies:", KillZombies)
 
-startCandyScanner()
-
---// MAIN FARM LOOP
 while true do
     local success, err = pcall(function()
+        -- Candy scan before tree farming.
+        collectCandy()
+
         local doors = getDoors()
 
         if #doors == 0 then
+            warn("[HalloweenFarm] No doors found")
             task.wait(RECOVERY_WAIT)
             return
         end
+
+        print("[HalloweenFarm] Doors found:", #doors)
 
         for _, door in ipairs(doors) do
             if not isAlive() then
@@ -474,23 +535,22 @@ while true do
                 return
             end
 
-            if door and door.Parent then
+            if door and door:IsDescendantOf(Workspace) then
                 farmDoor(door)
             end
 
             task.wait(0.3)
         end
 
+        -- Hop after finishing this server's door list.
         if AutoHop then
             serverHop()
             task.wait(RECOVERY_WAIT)
         end
     end)
 
-    Env._AxomFarmingDoor = false
-
     if not success then
-        warn("[HalloweenFarm]", tostring(err))
+        warn("[HalloweenFarm] Error:", tostring(err))
         task.wait(RECOVERY_WAIT)
     end
 end
