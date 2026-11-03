@@ -1,15 +1,18 @@
 
 --[[
     AXOMJB - HALLOWEEN AUTOFARM 🎃
-    Door Farming + Nearby Candy + Zombie Combat
-    Death Recovery + Auto Execute + Server Hop
+    Candy + Halloween Trees + Zombie Combat
+    Responsive GUI + Death Recovery + Auto Execute
 
-    AutoHop ONLY after every discovered tree is confirmed opened.
+    AutoHop only after all discovered trees are confirmed opened.
 ]]
 
 local Env = (getgenv and getgenv()) or _G
 
---// SETTINGS
+--==================================================
+-- SETTINGS
+--==================================================
+
 local AutoExecute = Env.AutoExecute
 if AutoExecute == nil then AutoExecute = true end
 
@@ -19,15 +22,6 @@ if AutoHop == nil then AutoHop = false end
 local KillZombies = Env.KillZombies
 if KillZombies == nil then KillZombies = true end
 
-local Players = game:GetService("Players")
-local Workspace = game:GetService("Workspace")
-local TeleportService = game:GetService("TeleportService")
-local HttpService = game:GetService("HttpService")
-local CoreGui = game:GetService("CoreGui")
-
-local Player = Players.LocalPlayer
-
---// CONFIGURATION
 local HOLD_TIME = 0
 local OPEN_WAIT = 3
 local RECOVERY_WAIT = 2
@@ -39,7 +33,23 @@ local DOOR_PATTERN = "^DOOR%s*%d+%s+NEW$"
 local LOADER_URL =
     "https://raw.githubusercontent.com/skidbudnoo-prog/Test-Script/refs/heads/main/tsbcandy%2Cluau"
 
---// RUNTIME
+--==================================================
+-- SERVICES
+--==================================================
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local CoreGui = game:GetService("CoreGui")
+local UserInputService = game:GetService("UserInputService")
+
+local Player = Players.LocalPlayer
+
+--==================================================
+-- RUNTIME
+--==================================================
+
 local Running = false
 local CandyCount = 0
 local StartTime = 0
@@ -48,9 +58,10 @@ local WorkerId = 0
 
 local DoorRegistry = {}
 local CountedCandy = {}
-local CurrentStatus = "STARTING..."
 
---// CANDY NAMES
+local CurrentStatus = "INITIALIZING"
+local LastError = ""
+
 local CandyNames = {
     BloxRoll = true,
     BloxyDrops = true,
@@ -66,7 +77,10 @@ local CandyNames = {
     OrangeCandy4 = true
 }
 
---// CHARACTER
+--==================================================
+-- CHARACTER FUNCTIONS
+--==================================================
+
 local function getCharacter()
     return Player.Character
 end
@@ -83,10 +97,11 @@ end
 
 local function isAlive()
     local humanoid = getHumanoid()
-    return humanoid ~= nil and humanoid.Health > 0 and getRoot() ~= nil
+    return humanoid ~= nil
+        and humanoid.Health > 0
+        and getRoot() ~= nil
 end
 
---// WAIT FOR RESPAWN
 local function waitForAlive()
     while Running do
         if isAlive() then
@@ -94,14 +109,25 @@ local function waitForAlive()
             return true
         end
 
-        CurrentStatus = "RESPAWNING..."
+        CurrentStatus = "WAITING FOR RESPAWN"
         task.wait(0.25)
     end
 
     return false
 end
 
---// GET PART
+Player.CharacterAdded:Connect(function()
+    if Running then
+        CurrentStatus = "CHARACTER RESPAWNED"
+        task.wait(1)
+        CurrentStatus = "RUNNING"
+    end
+end)
+
+--==================================================
+-- OBJECT FUNCTIONS
+--==================================================
+
 local function getPart(object)
     if not object then
         return nil
@@ -119,32 +145,46 @@ local function getPart(object)
     return object:FindFirstChildWhichIsA("BasePart", true)
 end
 
---// TELEPORT
+--==================================================
+-- TELEPORT
+--==================================================
+
 local function teleportTo(object)
     if not waitForAlive() then
         return false
     end
 
     local part = getPart(object)
+
     if not part then
         return false
     end
 
-    local success = pcall(function()
-        local character = getCharacter()
+    local character = getCharacter()
+
+    if not character then
+        return false
+    end
+
+    local success, err = pcall(function()
         character:PivotTo(
             CFrame.new(part.Position + Vector3.new(0, 2, 0))
         )
     end)
 
-    if success then
-        task.wait(CANDY_WAIT)
+    if not success then
+        LastError = tostring(err)
+        return false
     end
 
-    return success
+    task.wait(CANDY_WAIT)
+    return true
 end
 
---// FACE TREE
+--==================================================
+-- FACE TREE
+--==================================================
+
 local function faceTree(door)
     if not waitForAlive() then
         return false
@@ -157,12 +197,14 @@ local function faceTree(door)
         return false
     end
 
-    return pcall(function()
-        local target = part.Position
-
+    local success = pcall(function()
         root.CFrame = CFrame.lookAt(
             root.Position,
-            Vector3.new(target.X, root.Position.Y, target.Z)
+            Vector3.new(
+                part.Position.X,
+                root.Position.Y,
+                part.Position.Z
+            )
         )
 
         local camera = Workspace.CurrentCamera
@@ -170,13 +212,18 @@ local function faceTree(door)
         if camera then
             camera.CFrame = CFrame.lookAt(
                 camera.CFrame.Position,
-                target
+                part.Position
             )
         end
     end)
+
+    return success
 end
 
---// INTERACT WITH TREE
+--==================================================
+-- TREE INTERACTION
+--==================================================
+
 local function interact(object)
     local prompt = object:FindFirstChildWhichIsA(
         "ProximityPrompt",
@@ -206,14 +253,19 @@ local function interact(object)
     end)
 end
 
---// FIND HALLOWEEN DOORS
+--==================================================
+-- FIND TREES
+--==================================================
+
 local function getDoors()
     local folder = Workspace:FindFirstChild("HalloweenDoorTrees")
+
     if not folder then
         return nil
     end
 
     local template = folder:FindFirstChild("DoorTreeTemplate")
+
     if not template then
         return nil
     end
@@ -230,13 +282,13 @@ local function getDoors()
     table.sort(doors, function(a, b)
         local aNumber = tonumber(a.Name:match("%d+")) or 0
         local bNumber = tonumber(b.Name:match("%d+")) or 0
+
         return aNumber < bNumber
     end)
 
     return doors
 end
 
---// CHECK TREE OPENED STATE
 local function isDoorOpened(door)
     if not door or not door:IsDescendantOf(Workspace) then
         return true
@@ -254,7 +306,6 @@ local function isDoorOpened(door)
     return false
 end
 
---// CHECK ALL REGISTERED TREES
 local function allTreesOpened()
     local total = 0
 
@@ -269,7 +320,10 @@ local function allTreesOpened()
     return total > 0, total
 end
 
---// FIND NEARBY CANDY
+--==================================================
+-- CANDY SCANNER
+--==================================================
+
 local function getCandies()
     local candies = {}
     local root = getRoot()
@@ -278,15 +332,13 @@ local function getCandies()
         return candies
     end
 
-    local playerPosition = root.Position
-
     for _, object in ipairs(Workspace:GetDescendants()) do
         if CandyNames[object.Name] then
             local part = getPart(object)
 
             if part then
                 local distance =
-                    (part.Position - playerPosition).Magnitude
+                    (part.Position - root.Position).Magnitude
 
                 if distance <= CANDY_SCAN_RADIUS then
                     table.insert(candies, {
@@ -305,8 +357,15 @@ local function getCandies()
     return candies
 end
 
---// COLLECT CANDY
+--==================================================
+-- COLLECT CANDY
+--==================================================
+
 local function collectCandy()
+    if not waitForAlive() then
+        return
+    end
+
     local candies = getCandies()
 
     for _, entry in ipairs(candies) do
@@ -320,21 +379,29 @@ local function collectCandy()
 
         local candy = entry.Object
 
-        if candy and candy:IsDescendantOf(Workspace) then
+        if candy
+            and candy.Parent
+            and candy:IsDescendantOf(Workspace)
+            and not CountedCandy[candy] then
+
             local success = teleportTo(candy)
 
-            if success
-                and not candy:IsDescendantOf(Workspace)
-                and not CountedCandy[candy] then
+            if success then
+                task.wait(0.3)
 
-                CountedCandy[candy] = true
-                CandyCount = CandyCount + 1
+                if not candy:IsDescendantOf(Workspace) then
+                    CountedCandy[candy] = true
+                    CandyCount = CandyCount + 1
+                end
             end
         end
     end
 end
 
---// FIND ZOMBIES
+--==================================================
+-- ZOMBIES
+--==================================================
+
 local function getZombies()
     local zombies = {}
 
@@ -354,67 +421,105 @@ local function getZombies()
     return zombies
 end
 
---// ZOMBIE ATTACK
 local function attackZombies()
     if not KillZombies then
         return
     end
 
     for _, zombie in ipairs(getZombies()) do
-        if not Running then
+        if not Running or not waitForAlive() then
             return
         end
 
-        if not waitForAlive() then
-            return
-        end
+        local target = getPart(zombie)
 
-        pcall(function()
-            local target = getPart(zombie)
-            if not target then
-                return
-            end
-
+        if target then
             local character = getCharacter()
             local root = getRoot()
 
-            if not character or not root then
-                return
+            if character and root then
+                pcall(function()
+                    root.CFrame = CFrame.lookAt(
+                        root.Position,
+                        target.Position
+                    )
+
+                    local tool =
+                        character:FindFirstChildWhichIsA("Tool")
+
+                    if tool then
+                        for _ = 1, 5 do
+                            if not Running or not zombie.Parent then
+                                break
+                            end
+
+                            if not waitForAlive() then
+                                break
+                            end
+
+                            local humanoid =
+                                zombie:FindFirstChildWhichIsA("Humanoid")
+
+                            if not humanoid or humanoid.Health <= 0 then
+                                break
+                            end
+
+                            tool:Activate()
+                            task.wait(0.35)
+                        end
+                    end
+                end)
             end
-
-            root.CFrame = CFrame.lookAt(
-                root.Position,
-                target.Position
-            )
-
-            local tool = character:FindFirstChildWhichIsA("Tool")
-
-            if tool then
-                for _ = 1, 5 do
-                    if not Running or not zombie.Parent then
-                        break
-                    end
-
-                    if not waitForAlive() then
-                        break
-                    end
-
-                    local humanoid =
-                        zombie:FindFirstChildWhichIsA("Humanoid")
-
-                    if not humanoid or humanoid.Health <= 0 then
-                        break
-                    end
-
-                    tool:Activate()
-                    task.wait(0.35)
-                end
-            end
-        end)
+        end
     end
 end
 
---// QUEUE LOADER FOR NEXT SERVER
+--==================================================
+-- FARM ONE TREE
+--==================================================
+
+local function farmDoor(door)
+    if not Running or not door then
+        return
+    end
+
+    if not waitForAlive() then
+        return
+    end
+
+    if not door:IsDescendantOf(Workspace)
+        or isDoorOpened(door) then
+        return
+    end
+
+    CurrentStatus = "FARMING TREE"
+
+    if not teleportTo(door) then
+        return
+    end
+
+    faceTree(door)
+    task.wait(0.4)
+
+    if not Running then
+        return
+    end
+
+    interact(door)
+    task.wait(OPEN_WAIT)
+
+    if not Running then
+        return
+    end
+
+    collectCandy()
+    attackZombies()
+end
+
+--==================================================
+-- AUTO EXECUTE QUEUE
+--==================================================
+
 local function queueAutoExecute()
     if not AutoExecute then
         return true
@@ -425,34 +530,30 @@ local function queueAutoExecute()
         or Env.queueonteleport
 
     if type(queueFunction) ~= "function" then
-        local synTable = Env.syn
-
-        if type(synTable) == "table" then
-            queueFunction = synTable.queue_on_teleport
+        if type(Env.syn) == "table" then
+            queueFunction = Env.syn.queue_on_teleport
         end
     end
 
     if type(queueFunction) ~= "function" then
-        CurrentStatus = "AUTO-EXECUTE QUEUE NOT AVAILABLE"
+        CurrentStatus = "EXECUTOR QUEUE NOT SUPPORTED"
         return false
     end
 
-    local loaderCode =
+    local code =
         'loadstring(game:HttpGet("' .. LOADER_URL .. '"))()'
 
     local success = pcall(function()
-        queueFunction(loaderCode)
+        queueFunction(code)
     end)
 
-    if not success then
-        CurrentStatus = "FAILED TO QUEUE AUTO-EXECUTE"
-        return false
-    end
-
-    return true
+    return success
 end
 
---// SERVER HOP
+--==================================================
+-- SERVER HOP
+--==================================================
+
 local function serverHop()
     if not AutoHop then
         return false
@@ -465,7 +566,7 @@ local function serverHop()
         or http_request
 
     if type(requestFunction) ~= "function" then
-        CurrentStatus = "SERVER REQUEST UNAVAILABLE"
+        CurrentStatus = "REQUEST FUNCTION UNAVAILABLE"
         return false
     end
 
@@ -496,7 +597,7 @@ local function serverHop()
     end)
 
     if not decodedSuccess or type(decoded) ~= "table" then
-        CurrentStatus = "SERVER DATA INVALID"
+        CurrentStatus = "INVALID SERVER DATA"
         return false
     end
 
@@ -507,12 +608,11 @@ local function serverHop()
             and server.maxPlayers
             and server.playing < server.maxPlayers then
 
-            -- Queue the loader BEFORE teleporting.
             if not queueAutoExecute() then
                 return false
             end
 
-            CurrentStatus = "SERVER HOPPING..."
+            CurrentStatus = "SERVER HOPPING"
 
             local teleportSuccess = pcall(function()
                 TeleportService:TeleportToPlaceInstance(
@@ -532,7 +632,10 @@ local function serverHop()
     return false
 end
 
---// OPTIMIZATION SCRIPTS
+--==================================================
+-- OPTIMIZATION
+--==================================================
+
 local function loadOptimization(url)
     if type(loadstring) ~= "function" then
         return
@@ -546,55 +649,6 @@ local function loadOptimization(url)
             compiled()
         end
     end)
-end
-
-task.spawn(function()
-    loadOptimization(
-        "https://raw.githubusercontent.com/SkibidiFart123patapim/OpenSource/refs/heads/main/FixLag.luau"
-    )
-
-    loadOptimization(
-        "https://raw.githubusercontent.com/SkibidiFart123patapim/OpenSource/refs/heads/main/NoRender.luau"
-    )
-end)
-
---// FARM ONE TREE
-local function farmDoor(door)
-    if not Running or not door then
-        return
-    end
-
-    if not waitForAlive() then
-        return
-    end
-
-    if not door:IsDescendantOf(Workspace)
-        or isDoorOpened(door) then
-        return
-    end
-
-    if not teleportTo(door) then
-        return
-    end
-
-    faceTree(door)
-    task.wait(0.4)
-
-    if not Running then
-        return
-    end
-
-    -- If the player dies here, later farming functions
-    -- wait for the respawn before continuing.
-    interact(door)
-    task.wait(OPEN_WAIT)
-
-    if not Running then
-        return
-    end
-
-    collectCandy()
-    attackZombies()
 end
 
 --==================================================
@@ -665,6 +719,46 @@ create("UIStroke", {
     Transparency = 0.15
 }, Main)
 
+--// RESPONSIVE SCALE
+local UIScale = create("UIScale", {
+    Scale = 1
+}, Main)
+
+local Camera = Workspace.CurrentCamera
+
+local function updateScale()
+    Camera = Workspace.CurrentCamera
+
+    if not Camera then
+        return
+    end
+
+    local viewport = Camera.ViewportSize
+    local widthScale = viewport.X / 430
+    local heightScale = viewport.Y / 290
+
+    UIScale.Scale = math.clamp(
+        math.min(widthScale, heightScale),
+        0.72,
+        1.15
+    )
+end
+
+updateScale()
+
+if Camera then
+    Camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
+end
+
+Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+    Camera = Workspace.CurrentCamera
+    updateScale()
+
+    if Camera then
+        Camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
+    end
+end)
+
 --// HEADER
 local Header = create("Frame", {
     Size = UDim2.new(1, 0, 0, 76),
@@ -720,7 +814,6 @@ local Content = create("Frame", {
     BackgroundTransparency = 1
 }, Main)
 
---// STAT CARDS
 local function makeStat(title, value, x)
     local card = create("Frame", {
         Position = UDim2.new(x, 0, 0, 0),
@@ -759,19 +852,17 @@ end
 local CandyLabel = makeStat("🍬 CANDY CLAIMED", "0", 0)
 local TimerLabel = makeStat("⏱ SESSION TIMER", "00:00", 0.52)
 
---// STATUS
 local StatusLabel = create("TextLabel", {
     Position = UDim2.fromOffset(2, 83),
     Size = UDim2.new(1, -4, 0, 25),
     BackgroundTransparency = 1,
-    Text = "● STARTING...",
+    Text = "● INITIALIZING",
     TextColor3 = ORANGE,
     Font = Enum.Font.GothamBold,
     TextSize = 11,
     TextXAlignment = Enum.TextXAlignment.Left
 }, Content)
 
---// ONLY AUTOFARM BUTTON
 local FarmButton = create("TextButton", {
     Position = UDim2.fromOffset(0, 116),
     Size = UDim2.new(1, 0, 0, 48),
@@ -788,7 +879,10 @@ create("UICorner", {
     CornerRadius = UDim.new(0, 9)
 }, FarmButton)
 
---// TIMER FORMAT
+--==================================================
+-- GUI UPDATE
+--==================================================
+
 local function formatTime(seconds)
     seconds = math.max(0, math.floor(seconds))
 
@@ -808,7 +902,10 @@ local function updateGui()
     end
 end
 
---// STOP FARM
+--==================================================
+-- FARM CONTROL
+--==================================================
+
 local function stopFarm()
     if not Running then
         return
@@ -817,10 +914,10 @@ local function stopFarm()
     Running = false
     ElapsedTime = os.clock() - StartTime
     CurrentStatus = "STOPPED"
+
     updateGui()
 end
 
---// START FARM
 local function startFarm()
     if Running then
         return
@@ -833,30 +930,43 @@ local function startFarm()
 
     StartTime = os.clock() - ElapsedTime
     CurrentStatus = "RUNNING"
+
     updateGui()
 
     task.spawn(function()
         while Running and WorkerId == thisWorker do
-            local success = pcall(function()
-                -- Wait here instead of abandoning the worker on death.
-                if not waitForAlive() then
-                    return
-                end
 
+            -- Candy farming
+            local candySuccess, candyError = pcall(function()
                 collectCandy()
+            end)
 
-                if not Running or WorkerId ~= thisWorker then
-                    return
-                end
+            if not candySuccess then
+                LastError = tostring(candyError)
+                CurrentStatus = "CANDY ERROR"
+            end
 
-                local doors = getDoors()
+            if not Running or WorkerId ~= thisWorker then
+                break
+            end
 
-                if doors == nil then
-                    CurrentStatus = "WAITING FOR TREES..."
-                    task.wait(RECOVERY_WAIT)
-                    return
-                end
+            if not waitForAlive() then
+                break
+            end
 
+            -- Tree farming
+            local doors
+
+            local doorSuccess, doorError = pcall(function()
+                doors = getDoors()
+            end)
+
+            if not doorSuccess then
+                LastError = tostring(doorError)
+                CurrentStatus = "TREE SCAN ERROR"
+            end
+
+            if doors then
                 for _, door in ipairs(doors) do
                     if not Running or WorkerId ~= thisWorker then
                         break
@@ -867,43 +977,44 @@ local function startFarm()
                     end
 
                     if door and not isDoorOpened(door) then
-                        farmDoor(door)
+                        local success, err = pcall(function()
+                            farmDoor(door)
+                        end)
+
+                        if not success then
+                            LastError = tostring(err)
+                            CurrentStatus = "TREE FARM ERROR"
+                        end
                     end
 
                     task.wait(TREE_SWITCH_WAIT)
                 end
-
-                if not Running or WorkerId ~= thisWorker then
-                    return
-                end
-
-                -- HOP ONLY AFTER ALL REGISTERED TREES ARE OPENED.
-                if AutoHop then
-                    local completed, total = allTreesOpened()
-
-                    if completed and total > 0 then
-                        local hopped = serverHop()
-
-                        if hopped then
-                            return
-                        end
-
-                        task.wait(RECOVERY_WAIT)
-                    end
-                end
-            end)
-
-            if not success then
-                CurrentStatus = "RECOVERING..."
-                task.wait(RECOVERY_WAIT)
+            else
+                CurrentStatus = "WAITING FOR TREE FOLDER"
             end
 
-            task.wait(0.1)
+            if not Running or WorkerId ~= thisWorker then
+                break
+            end
+
+            -- AutoHop only when all registered trees are opened
+            if AutoHop then
+                local completed, total = allTreesOpened()
+
+                if completed and total > 0 then
+                    if serverHop() then
+                        return
+                    end
+
+                    task.wait(RECOVERY_WAIT)
+                end
+            end
+
+            task.wait(0.2)
         end
     end)
 end
 
---// BUTTON
 FarmButton.MouseButton1Click:Connect(function()
     if Running then
         stopFarm()
@@ -912,7 +1023,10 @@ FarmButton.MouseButton1Click:Connect(function()
     end
 end)
 
---// LIVE COUNTER + TIMER + STATUS
+--==================================================
+-- LIVE UI
+--==================================================
+
 task.spawn(function()
     while ScreenGui.Parent do
         if Running then
@@ -927,9 +1041,7 @@ task.spawn(function()
         if CurrentStatus == "RUNNING" then
             StatusLabel.TextColor3 = GREEN
         elseif CurrentStatus == "STOPPED"
-            or CurrentStatus:find("FAILED")
-            or CurrentStatus:find("UNAVAILABLE")
-            or CurrentStatus:find("INVALID") then
+            or CurrentStatus:find("ERROR") then
             StatusLabel.TextColor3 = RED
         else
             StatusLabel.TextColor3 = ORANGE
@@ -939,6 +1051,23 @@ task.spawn(function()
     end
 end)
 
---// AUTO START
+--==================================================
+-- START FARM FIRST, THEN OPTIMIZATIONS
+--==================================================
+
 updateGui()
 task.defer(startFarm)
+
+task.spawn(function()
+    task.wait(2)
+
+    loadOptimization(
+        "https://raw.githubusercontent.com/SkibidiFart123patapim/OpenSource/refs/heads/main/FixLag.luau"
+    )
+
+    task.wait(1)
+
+    loadOptimization(
+        "https://raw.githubusercontent.com/SkibidiFart123patapim/OpenSource/refs/heads/main/NoRender.luau"
+    )
+end)
