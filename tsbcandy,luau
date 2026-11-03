@@ -1,67 +1,46 @@
 
 --[[
     AXOMJB - HALLOWEEN AUTOFARM 🎃
-    Candy + Halloween Trees + Zombie Combat
-    Responsive GUI + Death Recovery + Auto Execute
-
-    AutoHop only after all discovered trees are confirmed opened.
+    No UI | Candy + Zombies | Trees + Zombies
+    Death Recovery | Auto Execute | Server Hop
 ]]
 
 local Env = (getgenv and getgenv()) or _G
 
---==================================================
--- SETTINGS
---==================================================
-
+--// SETTINGS
 local AutoExecute = Env.AutoExecute
 if AutoExecute == nil then AutoExecute = true end
 
 local AutoHop = Env.AutoHop
 if AutoHop == nil then AutoHop = false end
 
-local KillZombies = Env.KillZombies
-if KillZombies == nil then KillZombies = true end
+--// SERVICES
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
 
+local Player = Players.LocalPlayer
+
+--// CONFIGURATION
 local HOLD_TIME = 0
 local OPEN_WAIT = 3
-local RECOVERY_WAIT = 2
 local CANDY_WAIT = 0.5
 local CANDY_SCAN_RADIUS = 100
 local TREE_SWITCH_WAIT = 0.3
+local RECOVERY_WAIT = 2
 local DOOR_PATTERN = "^DOOR%s*%d+%s+NEW$"
 
 local LOADER_URL =
     "https://raw.githubusercontent.com/skidbudnoo-prog/Test-Script/refs/heads/main/tsbcandy%2Cluau"
 
---==================================================
--- SERVICES
---==================================================
-
-local Players = game:GetService("Players")
-local Workspace = game:GetService("Workspace")
-local TeleportService = game:GetService("TeleportService")
-local HttpService = game:GetService("HttpService")
-local CoreGui = game:GetService("CoreGui")
-local UserInputService = game:GetService("UserInputService")
-
-local Player = Players.LocalPlayer
-
---==================================================
--- RUNTIME
---==================================================
-
-local Running = false
+--// RUNTIME
+local Running = true
 local CandyCount = 0
-local StartTime = 0
-local ElapsedTime = 0
-local WorkerId = 0
-
 local DoorRegistry = {}
 local CountedCandy = {}
 
-local CurrentStatus = "INITIALIZING"
-local LastError = ""
-
+--// CANDY NAMES
 local CandyNames = {
     BloxRoll = true,
     BloxyDrops = true,
@@ -78,7 +57,7 @@ local CandyNames = {
 }
 
 --==================================================
--- CHARACTER FUNCTIONS
+-- CHARACTER
 --==================================================
 
 local function getCharacter()
@@ -105,27 +84,17 @@ end
 local function waitForAlive()
     while Running do
         if isAlive() then
-            CurrentStatus = "RUNNING"
             return true
         end
 
-        CurrentStatus = "WAITING FOR RESPAWN"
         task.wait(0.25)
     end
 
     return false
 end
 
-Player.CharacterAdded:Connect(function()
-    if Running then
-        CurrentStatus = "CHARACTER RESPAWNED"
-        task.wait(1)
-        CurrentStatus = "RUNNING"
-    end
-end)
-
 --==================================================
--- OBJECT FUNCTIONS
+-- OBJECT HELPERS
 --==================================================
 
 local function getPart(object)
@@ -155,30 +124,21 @@ local function teleportTo(object)
     end
 
     local part = getPart(object)
-
     if not part then
         return false
     end
 
-    local character = getCharacter()
-
-    if not character then
-        return false
-    end
-
-    local success, err = pcall(function()
-        character:PivotTo(
+    local success = pcall(function()
+        getCharacter():PivotTo(
             CFrame.new(part.Position + Vector3.new(0, 2, 0))
         )
     end)
 
-    if not success then
-        LastError = tostring(err)
-        return false
+    if success then
+        task.wait(CANDY_WAIT)
     end
 
-    task.wait(CANDY_WAIT)
-    return true
+    return success
 end
 
 --==================================================
@@ -197,7 +157,7 @@ local function faceTree(door)
         return false
     end
 
-    local success = pcall(function()
+    return pcall(function()
         root.CFrame = CFrame.lookAt(
             root.Position,
             Vector3.new(
@@ -216,8 +176,6 @@ local function faceTree(door)
             )
         end
     end)
-
-    return success
 end
 
 --==================================================
@@ -259,13 +217,11 @@ end
 
 local function getDoors()
     local folder = Workspace:FindFirstChild("HalloweenDoorTrees")
-
     if not folder then
         return nil
     end
 
     local template = folder:FindFirstChild("DoorTreeTemplate")
-
     if not template then
         return nil
     end
@@ -282,12 +238,15 @@ local function getDoors()
     table.sort(doors, function(a, b)
         local aNumber = tonumber(a.Name:match("%d+")) or 0
         local bNumber = tonumber(b.Name:match("%d+")) or 0
-
         return aNumber < bNumber
     end)
 
     return doors
 end
+
+--==================================================
+-- CHECK OPENED TREES
+--==================================================
 
 local function isDoorOpened(door)
     if not door or not door:IsDescendantOf(Workspace) then
@@ -318,6 +277,87 @@ local function allTreesOpened()
     end
 
     return total > 0, total
+end
+
+--==================================================
+-- ZOMBIE FARM
+--==================================================
+
+local function getZombies()
+    local zombies = {}
+
+    for _, object in ipairs(Workspace:GetDescendants()) do
+        if object.Name == "HalloweenZombie"
+            and object:IsA("Model") then
+
+            local humanoid =
+                object:FindFirstChildWhichIsA("Humanoid")
+
+            if humanoid and humanoid.Health > 0 then
+                table.insert(zombies, object)
+            end
+        end
+    end
+
+    return zombies
+end
+
+local function attackZombies()
+    if not waitForAlive() then
+        return
+    end
+
+    for _, zombie in ipairs(getZombies()) do
+        if not Running or not waitForAlive() then
+            return
+        end
+
+        pcall(function()
+            local target = getPart(zombie)
+
+            if not target then
+                return
+            end
+
+            local root = getRoot()
+
+            if not root then
+                return
+            end
+
+            root.CFrame = CFrame.lookAt(
+                root.Position,
+                target.Position
+            )
+
+            for _ = 1, 5 do
+                if not Running or not zombie.Parent then
+                    break
+                end
+
+                if not waitForAlive() then
+                    break
+                end
+
+                local zombieHumanoid =
+                    zombie:FindFirstChildWhichIsA("Humanoid")
+
+                if not zombieHumanoid or zombieHumanoid.Health <= 0 then
+                    break
+                end
+
+                local character = getCharacter()
+                local tool = character
+                    and character:FindFirstChildWhichIsA("Tool")
+
+                if tool then
+                    tool:Activate()
+                end
+
+                task.wait(0.35)
+            end
+        end)
+    end
 end
 
 --==================================================
@@ -358,7 +398,7 @@ local function getCandies()
 end
 
 --==================================================
--- COLLECT CANDY
+-- COLLECT CANDY + ZOMBIES
 --==================================================
 
 local function collectCandy()
@@ -366,21 +406,19 @@ local function collectCandy()
         return
     end
 
+    -- Attack zombies as part of candy farming.
+    attackZombies()
+
     local candies = getCandies()
 
     for _, entry in ipairs(candies) do
-        if not Running then
-            return
-        end
-
-        if not waitForAlive() then
+        if not Running or not waitForAlive() then
             return
         end
 
         local candy = entry.Object
 
         if candy
-            and candy.Parent
             and candy:IsDescendantOf(Workspace)
             and not CountedCandy[candy] then
 
@@ -394,105 +432,30 @@ local function collectCandy()
                     CandyCount = CandyCount + 1
                 end
             end
+
+            -- Keep attacking while collecting candy.
+            attackZombies()
         end
     end
 end
 
 --==================================================
--- ZOMBIES
---==================================================
-
-local function getZombies()
-    local zombies = {}
-
-    for _, object in ipairs(Workspace:GetDescendants()) do
-        if object.Name == "HalloweenZombie"
-            and object:IsA("Model") then
-
-            local humanoid =
-                object:FindFirstChildWhichIsA("Humanoid")
-
-            if humanoid and humanoid.Health > 0 then
-                table.insert(zombies, object)
-            end
-        end
-    end
-
-    return zombies
-end
-
-local function attackZombies()
-    if not KillZombies then
-        return
-    end
-
-    for _, zombie in ipairs(getZombies()) do
-        if not Running or not waitForAlive() then
-            return
-        end
-
-        local target = getPart(zombie)
-
-        if target then
-            local character = getCharacter()
-            local root = getRoot()
-
-            if character and root then
-                pcall(function()
-                    root.CFrame = CFrame.lookAt(
-                        root.Position,
-                        target.Position
-                    )
-
-                    local tool =
-                        character:FindFirstChildWhichIsA("Tool")
-
-                    if tool then
-                        for _ = 1, 5 do
-                            if not Running or not zombie.Parent then
-                                break
-                            end
-
-                            if not waitForAlive() then
-                                break
-                            end
-
-                            local humanoid =
-                                zombie:FindFirstChildWhichIsA("Humanoid")
-
-                            if not humanoid or humanoid.Health <= 0 then
-                                break
-                            end
-
-                            tool:Activate()
-                            task.wait(0.35)
-                        end
-                    end
-                end)
-            end
-        end
-    end
-end
-
---==================================================
--- FARM ONE TREE
+-- FARM TREE + ZOMBIES
 --==================================================
 
 local function farmDoor(door)
-    if not Running or not door then
+    if not Running or not waitForAlive() then
         return
     end
 
-    if not waitForAlive() then
-        return
-    end
-
-    if not door:IsDescendantOf(Workspace)
+    if not door
+        or not door:IsDescendantOf(Workspace)
         or isDoorOpened(door) then
         return
     end
 
-    CurrentStatus = "FARMING TREE"
+    -- Attack zombies before farming the door.
+    attackZombies()
 
     if not teleportTo(door) then
         return
@@ -512,12 +475,13 @@ local function farmDoor(door)
         return
     end
 
+    -- Continue both farms after opening the door.
     collectCandy()
     attackZombies()
 end
 
 --==================================================
--- AUTO EXECUTE QUEUE
+-- AUTO EXECUTE ON TELEPORT
 --==================================================
 
 local function queueAutoExecute()
@@ -529,25 +493,21 @@ local function queueAutoExecute()
         Env.queue_on_teleport
         or Env.queueonteleport
 
-    if type(queueFunction) ~= "function" then
-        if type(Env.syn) == "table" then
-            queueFunction = Env.syn.queue_on_teleport
-        end
+    if type(queueFunction) ~= "function"
+        and type(Env.syn) == "table" then
+        queueFunction = Env.syn.queue_on_teleport
     end
 
     if type(queueFunction) ~= "function" then
-        CurrentStatus = "EXECUTOR QUEUE NOT SUPPORTED"
         return false
     end
 
-    local code =
+    local loaderCode =
         'loadstring(game:HttpGet("' .. LOADER_URL .. '"))()'
 
-    local success = pcall(function()
-        queueFunction(code)
+    return pcall(function()
+        queueFunction(loaderCode)
     end)
-
-    return success
 end
 
 --==================================================
@@ -566,7 +526,6 @@ local function serverHop()
         or http_request
 
     if type(requestFunction) ~= "function" then
-        CurrentStatus = "REQUEST FUNCTION UNAVAILABLE"
         return false
     end
 
@@ -583,12 +542,10 @@ local function serverHop()
     end)
 
     if not success or not response then
-        CurrentStatus = "SERVER SEARCH FAILED"
         return false
     end
 
     if (response.StatusCode or response.Status) ~= 200 then
-        CurrentStatus = "SERVER SEARCH FAILED"
         return false
     end
 
@@ -597,7 +554,6 @@ local function serverHop()
     end)
 
     if not decodedSuccess or type(decoded) ~= "table" then
-        CurrentStatus = "INVALID SERVER DATA"
         return false
     end
 
@@ -611,8 +567,6 @@ local function serverHop()
             if not queueAutoExecute() then
                 return false
             end
-
-            CurrentStatus = "SERVER HOPPING"
 
             local teleportSuccess = pcall(function()
                 TeleportService:TeleportToPlaceInstance(
@@ -628,7 +582,6 @@ local function serverHop()
         end
     end
 
-    CurrentStatus = "NO AVAILABLE SERVER"
     return false
 end
 
@@ -652,411 +605,73 @@ local function loadOptimization(url)
 end
 
 --==================================================
--- GUI
+-- MAIN FARM LOOP
 --==================================================
 
-local oldGui
-
-pcall(function()
-    oldGui = CoreGui:FindFirstChild("AxomJB_Halloween")
-end)
-
-if oldGui then
-    oldGui:Destroy()
-end
-
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "AxomJB_Halloween"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-
-local parentSuccess = pcall(function()
-    ScreenGui.Parent = CoreGui
-end)
-
-if not parentSuccess or not ScreenGui.Parent then
-    ScreenGui.Parent = Player:WaitForChild("PlayerGui")
-end
-
-local function create(class, properties, parent)
-    local object = Instance.new(class)
-
-    for property, value in pairs(properties) do
-        object[property] = value
-    end
-
-    object.Parent = parent
-    return object
-end
-
---// COLORS
-local ORANGE = Color3.fromRGB(255, 115, 35)
-local DARK = Color3.fromRGB(19, 15, 24)
-local PANEL = Color3.fromRGB(30, 23, 37)
-local LIGHT = Color3.fromRGB(245, 235, 225)
-local MUTED = Color3.fromRGB(165, 150, 165)
-local GREEN = Color3.fromRGB(90, 220, 125)
-local RED = Color3.fromRGB(245, 80, 80)
-
---// MAIN WINDOW
-local Main = create("Frame", {
-    Name = "Main",
-    Size = UDim2.fromOffset(380, 250),
-    Position = UDim2.new(0.5, -190, 0.5, -125),
-    BackgroundColor3 = DARK,
-    BorderSizePixel = 0,
-    Active = true,
-    Draggable = true
-}, ScreenGui)
-
-create("UICorner", {
-    CornerRadius = UDim.new(0, 12)
-}, Main)
-
-create("UIStroke", {
-    Color = ORANGE,
-    Thickness = 1.5,
-    Transparency = 0.15
-}, Main)
-
---// RESPONSIVE SCALE
-local UIScale = create("UIScale", {
-    Scale = 1
-}, Main)
-
-local Camera = Workspace.CurrentCamera
-
-local function updateScale()
-    Camera = Workspace.CurrentCamera
-
-    if not Camera then
-        return
-    end
-
-    local viewport = Camera.ViewportSize
-    local widthScale = viewport.X / 430
-    local heightScale = viewport.Y / 290
-
-    UIScale.Scale = math.clamp(
-        math.min(widthScale, heightScale),
-        0.72,
-        1.15
-    )
-end
-
-updateScale()
-
-if Camera then
-    Camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
-end
-
-Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
-    Camera = Workspace.CurrentCamera
-    updateScale()
-
-    if Camera then
-        Camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
-    end
-end)
-
---// HEADER
-local Header = create("Frame", {
-    Size = UDim2.new(1, 0, 0, 76),
-    BackgroundColor3 = PANEL,
-    BorderSizePixel = 0
-}, Main)
-
-create("UICorner", {
-    CornerRadius = UDim.new(0, 12)
-}, Header)
-
-create("Frame", {
-    Position = UDim2.new(0, 0, 1, -12),
-    Size = UDim2.new(1, 0, 0, 12),
-    BackgroundColor3 = PANEL,
-    BorderSizePixel = 0
-}, Header)
-
-create("ImageLabel", {
-    Size = UDim2.fromOffset(52, 52),
-    Position = UDim2.fromOffset(13, 12),
-    BackgroundTransparency = 1,
-    Image = "rbxassetid://108275708321017",
-    ScaleType = Enum.ScaleType.Fit
-}, Header)
-
-create("TextLabel", {
-    Position = UDim2.fromOffset(75, 13),
-    Size = UDim2.new(1, -90, 0, 27),
-    BackgroundTransparency = 1,
-    Text = "AXOMJB HALLOWEEN",
-    TextColor3 = ORANGE,
-    Font = Enum.Font.GothamBlack,
-    TextSize = 17,
-    TextXAlignment = Enum.TextXAlignment.Left
-}, Header)
-
-create("TextLabel", {
-    Position = UDim2.fromOffset(76, 41),
-    Size = UDim2.new(1, -90, 0, 18),
-    BackgroundTransparency = 1,
-    Text = "AUTOFARM • 🎃 EDITION",
-    TextColor3 = MUTED,
-    Font = Enum.Font.GothamBold,
-    TextSize = 10,
-    TextXAlignment = Enum.TextXAlignment.Left
-}, Header)
-
---// CONTENT
-local Content = create("Frame", {
-    Position = UDim2.fromOffset(14, 88),
-    Size = UDim2.new(1, -28, 1, -102),
-    BackgroundTransparency = 1
-}, Main)
-
-local function makeStat(title, value, x)
-    local card = create("Frame", {
-        Position = UDim2.new(x, 0, 0, 0),
-        Size = UDim2.new(0.48, -4, 1, 0),
-        BackgroundColor3 = PANEL,
-        BorderSizePixel = 0
-    }, Content)
-
-    create("UICorner", {
-        CornerRadius = UDim.new(0, 9)
-    }, card)
-
-    create("TextLabel", {
-        Position = UDim2.fromOffset(11, 10),
-        Size = UDim2.new(1, -20, 0, 18),
-        BackgroundTransparency = 1,
-        Text = title,
-        TextColor3 = MUTED,
-        Font = Enum.Font.GothamBold,
-        TextSize = 11,
-        TextXAlignment = Enum.TextXAlignment.Left
-    }, card)
-
-    return create("TextLabel", {
-        Position = UDim2.fromOffset(11, 31),
-        Size = UDim2.new(1, -20, 0, 29),
-        BackgroundTransparency = 1,
-        Text = value,
-        TextColor3 = ORANGE,
-        Font = Enum.Font.GothamBlack,
-        TextSize = 21,
-        TextXAlignment = Enum.TextXAlignment.Left
-    }, card)
-end
-
-local CandyLabel = makeStat("🍬 CANDY CLAIMED", "0", 0)
-local TimerLabel = makeStat("⏱ SESSION TIMER", "00:00", 0.52)
-
-local StatusLabel = create("TextLabel", {
-    Position = UDim2.fromOffset(2, 83),
-    Size = UDim2.new(1, -4, 0, 25),
-    BackgroundTransparency = 1,
-    Text = "● INITIALIZING",
-    TextColor3 = ORANGE,
-    Font = Enum.Font.GothamBold,
-    TextSize = 11,
-    TextXAlignment = Enum.TextXAlignment.Left
-}, Content)
-
-local FarmButton = create("TextButton", {
-    Position = UDim2.fromOffset(0, 116),
-    Size = UDim2.new(1, 0, 0, 48),
-    BackgroundColor3 = GREEN,
-    Text = "AUTOFARM: ON",
-    TextColor3 = LIGHT,
-    Font = Enum.Font.GothamBlack,
-    TextSize = 15,
-    BorderSizePixel = 0,
-    AutoButtonColor = true
-}, Content)
-
-create("UICorner", {
-    CornerRadius = UDim.new(0, 9)
-}, FarmButton)
-
---==================================================
--- GUI UPDATE
---==================================================
-
-local function formatTime(seconds)
-    seconds = math.max(0, math.floor(seconds))
-
-    local minutes = math.floor(seconds / 60)
-    local remaining = seconds % 60
-
-    return string.format("%02d:%02d", minutes, remaining)
-end
-
-local function updateGui()
-    if Running then
-        FarmButton.Text = "AUTOFARM: ON"
-        FarmButton.BackgroundColor3 = GREEN
-    else
-        FarmButton.Text = "AUTOFARM: OFF"
-        FarmButton.BackgroundColor3 = RED
-    end
-end
-
---==================================================
--- FARM CONTROL
---==================================================
-
-local function stopFarm()
-    if not Running then
-        return
-    end
-
-    Running = false
-    ElapsedTime = os.clock() - StartTime
-    CurrentStatus = "STOPPED"
-
-    updateGui()
-end
-
-local function startFarm()
-    if Running then
-        return
-    end
-
-    Running = true
-    WorkerId = WorkerId + 1
-
-    local thisWorker = WorkerId
-
-    StartTime = os.clock() - ElapsedTime
-    CurrentStatus = "RUNNING"
-
-    updateGui()
-
-    task.spawn(function()
-        while Running and WorkerId == thisWorker do
-
-            -- Candy farming
-            local candySuccess, candyError = pcall(function()
-                collectCandy()
-            end)
-
-            if not candySuccess then
-                LastError = tostring(candyError)
-                CurrentStatus = "CANDY ERROR"
-            end
-
-            if not Running or WorkerId ~= thisWorker then
-                break
-            end
-
+task.spawn(function()
+    while Running do
+        local success = pcall(function()
             if not waitForAlive() then
-                break
+                return
             end
 
-            -- Tree farming
-            local doors
+            -- Candy farm includes zombie attacks.
+            collectCandy()
 
-            local doorSuccess, doorError = pcall(function()
-                doors = getDoors()
-            end)
-
-            if not doorSuccess then
-                LastError = tostring(doorError)
-                CurrentStatus = "TREE SCAN ERROR"
+            if not Running then
+                return
             end
 
-            if doors then
-                for _, door in ipairs(doors) do
-                    if not Running or WorkerId ~= thisWorker then
-                        break
-                    end
+            local doors = getDoors()
 
-                    if not waitForAlive() then
-                        break
-                    end
+            if not doors then
+                task.wait(RECOVERY_WAIT)
+                return
+            end
 
-                    if door and not isDoorOpened(door) then
-                        local success, err = pcall(function()
-                            farmDoor(door)
-                        end)
-
-                        if not success then
-                            LastError = tostring(err)
-                            CurrentStatus = "TREE FARM ERROR"
-                        end
-                    end
-
-                    task.wait(TREE_SWITCH_WAIT)
+            -- Halloween door farm includes zombie attacks.
+            for _, door in ipairs(doors) do
+                if not Running or not waitForAlive() then
+                    return
                 end
-            else
-                CurrentStatus = "WAITING FOR TREE FOLDER"
+
+                if door and not isDoorOpened(door) then
+                    farmDoor(door)
+                end
+
+                task.wait(TREE_SWITCH_WAIT)
             end
 
-            if not Running or WorkerId ~= thisWorker then
-                break
+            if not Running then
+                return
             end
 
-            -- AutoHop only when all registered trees are opened
+            -- Only hop after all registered trees are opened.
             if AutoHop then
                 local completed, total = allTreesOpened()
 
                 if completed and total > 0 then
                     if serverHop() then
+                        Running = false
                         return
                     end
 
                     task.wait(RECOVERY_WAIT)
                 end
             end
+        end)
 
-            task.wait(0.2)
+        if not success then
+            task.wait(RECOVERY_WAIT)
         end
-    end)
-end
 
-FarmButton.MouseButton1Click:Connect(function()
-    if Running then
-        stopFarm()
-    else
-        startFarm()
+        task.wait(0.1)
     end
 end)
 
 --==================================================
--- LIVE UI
+-- LOAD OPTIMIZATIONS
 --==================================================
-
-task.spawn(function()
-    while ScreenGui.Parent do
-        if Running then
-            ElapsedTime = os.clock() - StartTime
-        end
-
-        CandyLabel.Text = tostring(CandyCount)
-        TimerLabel.Text = formatTime(ElapsedTime)
-
-        StatusLabel.Text = "● " .. CurrentStatus
-
-        if CurrentStatus == "RUNNING" then
-            StatusLabel.TextColor3 = GREEN
-        elseif CurrentStatus == "STOPPED"
-            or CurrentStatus:find("ERROR") then
-            StatusLabel.TextColor3 = RED
-        else
-            StatusLabel.TextColor3 = ORANGE
-        end
-
-        task.wait(0.5)
-    end
-end)
-
---==================================================
--- START FARM FIRST, THEN OPTIMIZATIONS
---==================================================
-
-updateGui()
-task.defer(startFarm)
 
 task.spawn(function()
     task.wait(2)
