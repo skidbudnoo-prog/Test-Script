@@ -1,10 +1,10 @@
-
 --[[
     AXOMJB - HALLOWEEN AUTOFARM 🎃
     SAFE CANDY TELEPORT
     HALLOWEEN DOOR FARM
     NEARBY ZOMBIE DETECTION
-    AUTO RESET + DEATH RECOVERY
+    AUTO RESET ON DAMAGE
+    AUTOMATIC RESPAWN RECOVERY
     SERVER HOP + AUTO EXECUTE
 ]]
 
@@ -54,20 +54,17 @@ local DOOR_PATTERN = "^DOOR%s*%d+%s+NEW$"
 local LOADER_URL =
     "https://raw.githubusercontent.com/skidbudnoo-prog/Test-Script/refs/heads/main/tsbcandy%2Cluau"
 
-local FIXLAG_URL =
-    "https://raw.githubusercontent.com/SkibidiFart123patapim/OpenSource/refs/heads/main/FixLag.luau"
-
-local NORENDER_URL =
-    "https://raw.githubusercontent.com/SkibidiFart123patapim/OpenSource/refs/heads/main/NoRender.luau"
-
 --==================================================
 -- RUNTIME
 --==================================================
 
 local Running = true
+local ResetInProgress = false
+
 local DoorRegistry = {}
 local CountedCandy = {}
 local CandyCooldown = {}
+local CharacterConnections = {}
 
 --==================================================
 -- CANDY NAMES
@@ -134,6 +131,100 @@ local function waitForAlive()
 end
 
 --==================================================
+-- AUTO RESET WHEN TAKING DAMAGE
+--==================================================
+
+local function forceReset(humanoid)
+    if ResetInProgress or not humanoid then
+        return
+    end
+
+    if humanoid.Health <= 0 then
+        return
+    end
+
+    ResetInProgress = true
+
+    warn("[AXOMJB] Damage detected! Resetting character...")
+
+    pcall(function()
+        humanoid.Health = 0
+    end)
+end
+
+local function disconnectCharacterConnections()
+    for _, connection in ipairs(CharacterConnections) do
+        pcall(function()
+            connection:Disconnect()
+        end)
+    end
+
+    table.clear(CharacterConnections)
+end
+
+local function monitorCharacter(character)
+    disconnectCharacterConnections()
+
+    if not character then
+        return
+    end
+
+    local humanoid = character:WaitForChild("Humanoid", 15)
+
+    if not humanoid then
+        warn("[AXOMJB] Could not find respawned Humanoid.")
+        return
+    end
+
+    if Player.Character ~= character then
+        return
+    end
+
+    local previousHealth = humanoid.Health
+
+    table.insert(
+        CharacterConnections,
+        humanoid.HealthChanged:Connect(function(newHealth)
+            if Player.Character ~= character then
+                return
+            end
+
+            if newHealth < previousHealth and newHealth > 0 then
+                forceReset(humanoid)
+            end
+
+            previousHealth = newHealth
+        end)
+    )
+
+    table.insert(
+        CharacterConnections,
+        humanoid.Died:Connect(function()
+            ResetInProgress = true
+            warn("[AXOMJB] Character died. Waiting for respawn...")
+        end)
+    )
+
+    warn("[AXOMJB] Character damage monitoring active.")
+end
+
+Player.CharacterAdded:Connect(function(character)
+    ResetInProgress = false
+
+    warn("[AXOMJB] Character respawned. Preparing to resume farming...")
+
+    task.spawn(function()
+        monitorCharacter(character)
+    end)
+end)
+
+if Player.Character then
+    task.spawn(function()
+        monitorCharacter(Player.Character)
+    end)
+end
+
+--==================================================
 -- AUTOMATIC RESET ON START
 --==================================================
 
@@ -149,6 +240,10 @@ local function resetOnStart()
         return false
     end
 
+    ResetInProgress = true
+
+    warn("[AXOMJB] Performing startup reset...")
+
     pcall(function()
         humanoid.Health = 0
     end)
@@ -157,7 +252,19 @@ local function resetOnStart()
         task.wait(0.25)
     end
 
-    return waitForAlive()
+    if not Running then
+        return false
+    end
+
+    ResetInProgress = false
+
+    if not waitForAlive() then
+        return false
+    end
+
+    warn("[AXOMJB] Startup reset complete. Farming enabled.")
+
+    return true
 end
 
 --==================================================
@@ -183,7 +290,6 @@ end
 
 --==================================================
 -- DOOR TELEPORT
--- Candy collection uses a separate safe teleport.
 --==================================================
 
 local function teleportTo(object)
@@ -198,7 +304,13 @@ local function teleportTo(object)
     end
 
     local success = pcall(function()
-        getCharacter():PivotTo(
+        local character = getCharacter()
+
+        if not character then
+            error("Character missing")
+        end
+
+        character:PivotTo(
             CFrame.new(part.Position + Vector3.new(0, 3, 0))
         )
     end)
@@ -252,6 +364,10 @@ end
 --==================================================
 
 local function interact(object)
+    if not object or not object.Parent then
+        return false
+    end
+
     local prompt = object:FindFirstChildWhichIsA(
         "ProximityPrompt",
         true
@@ -347,10 +463,12 @@ local function allTreesOpened()
     local total = 0
 
     for door in pairs(DoorRegistry) do
-        total = total + 1
+        if door and door.Parent then
+            total = total + 1
 
-        if not isDoorOpened(door) then
-            return false, total
+            if not isDoorOpened(door) then
+                return false, total
+            end
         end
     end
 
@@ -527,6 +645,7 @@ local function getSafeCandyPosition(candy, part)
     params.RespectCanCollide = true
 
     local origin = part.Position + Vector3.new(0, 8, 0)
+
     local direction = Vector3.new(
         0,
         -CANDY_GROUND_CHECK_DISTANCE,
@@ -543,17 +662,14 @@ local function getSafeCandyPosition(candy, part)
         return nil
     end
 
-    -- Reject water.
     if result.Material == Enum.Material.Water then
         return nil
     end
 
-    -- Reject steep surfaces.
     if result.Normal.Y < 0.7 then
         return nil
     end
 
-    -- Reject non-collidable ground parts.
     if result.Instance:IsA("BasePart")
         and not result.Instance.CanCollide then
         return nil
@@ -562,7 +678,6 @@ local function getSafeCandyPosition(candy, part)
     local groundDrop =
         part.Position.Y - result.Position.Y
 
-    -- Reject large drops and likely void destinations.
     if groundDrop < -5
         or groundDrop > CANDY_MAX_GROUND_DROP then
         return nil
@@ -674,7 +789,6 @@ local function collectCandy()
             return
         end
 
-        -- Recalculate the safe position right before teleporting.
         local safePosition =
             getSafeCandyPosition(candy, part)
 
@@ -685,7 +799,6 @@ local function collectCandy()
             continue
         end
 
-        -- Confirm the destination is still within range.
         local distance =
             (safePosition - root.Position).Magnitude
 
@@ -693,17 +806,14 @@ local function collectCandy()
             continue
         end
 
-        -- Teleport to the checked ground position.
         local success = pcall(function()
             character:PivotTo(CFrame.new(safePosition))
         end)
 
         if success then
-            -- Slow down collection to prevent rapid bouncing.
             task.wait(CANDY_TELEPORT_DELAY)
         end
 
-        -- Check whether the game removed the collected candy.
         if not candy:IsDescendantOf(Workspace) then
             CountedCandy[candy] = true
             CandyCooldown[candy] = nil
@@ -712,7 +822,6 @@ local function collectCandy()
                 os.clock() + CANDY_RETRY_COOLDOWN
         end
 
-        -- Only collect one candy per call.
         return
     end
 end
@@ -862,35 +971,8 @@ local function serverHop()
 end
 
 --==================================================
--- OPTIMIZATION SCRIPTS
---==================================================
-
-local function loadOptimization(url)
-    if type(loadstring) ~= "function" then
-        return
-    end
-
-    pcall(function()
-        local source = game:HttpGet(url)
-        local compiled = loadstring(source)
-
-        if compiled then
-            compiled()
-        end
-    end)
-end
-
---==================================================
 -- STARTUP OPTIMIZATIONS
 --==================================================
-
-task.spawn(function()
-    task.wait(2)
-    loadOptimization(FIXLAG_URL)
-
-    task.wait(1)
-    loadOptimization(NORENDER_URL)
-end)
 
 --==================================================
 -- RESET BEFORE STARTING FARM
@@ -903,6 +985,8 @@ end
 --==================================================
 -- MAIN FARM LOOP
 --==================================================
+
+warn("[AXOMJB] Halloween Autofarm started!")
 
 while Running do
     local success, err = pcall(function()
@@ -917,8 +1001,7 @@ while Running do
             return
         end
 
-        -- Always continue searching for doors,
-        -- even when there are no available candies.
+        -- Find and farm doors.
         local doors = getDoors()
 
         for _, door in ipairs(doors) do
@@ -940,13 +1023,13 @@ while Running do
             return
         end
 
-        -- Search for another candy after door farming.
+        -- Collect another candy after door farming.
         collectCandy()
 
         -- Attack nearby zombies.
         attackZombies()
 
-        -- Hop only after all tracked doors are opened.
+        -- Server hop after doors are opened.
         if ServerHop then
             local completed, total = allTreesOpened()
 
