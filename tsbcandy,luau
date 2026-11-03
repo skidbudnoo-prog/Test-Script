@@ -5,6 +5,7 @@
     CANDY FARM | HALLOWEEN DOOR FARM
     NEARBY ZOMBIE DETECTION
     DEATH RECOVERY | SERVER HOP + AUTO EXECUTE
+    CALMER CANDY COLLECTION
 ]]
 
 local Env = (getgenv and getgenv()) or _G
@@ -13,13 +14,11 @@ local Env = (getgenv and getgenv()) or _G
 -- SETTINGS
 --==================================================
 
--- ONE SETTING CONTROLS SERVER HOP AND AUTO EXECUTE
 local ServerHop = Env.ServerHop
 if ServerHop == nil then
     ServerHop = false
 end
 
--- AutoExecute is tied to ServerHop.
 local AutoExecute = ServerHop
 
 --==================================================
@@ -38,12 +37,13 @@ local Player = Players.LocalPlayer
 --==================================================
 
 local OPEN_WAIT = 3
-local CANDY_WAIT = 0.5
 local CANDY_SCAN_RADIUS = 100
 local ZOMBIE_SCAN_RADIUS = 60
-local TREE_SWITCH_WAIT = 0.3
-local RECOVERY_WAIT = 2
+local TREE_SWITCH_WAIT = 0.5
 local SCAN_WAIT = 1
+local CANDY_PICKUP_DISTANCE = 5
+local CANDY_MOVE_TIMEOUT = 6
+local CANDY_RETRY_COOLDOWN = 3
 
 local DOOR_PATTERN = "^DOOR%s*%d+%s+NEW$"
 
@@ -63,6 +63,7 @@ local NORENDER_URL =
 local Running = true
 local DoorRegistry = {}
 local CountedCandy = {}
+local CandyCooldown = {}
 
 --==================================================
 -- CANDY NAMES
@@ -144,12 +145,10 @@ local function resetOnStart()
         return false
     end
 
-    -- Reset once when the script starts.
     pcall(function()
         humanoid.Health = 0
     end)
 
-    -- Wait for replacement character.
     while Running and Player.Character == oldCharacter do
         task.wait(0.25)
     end
@@ -179,7 +178,8 @@ local function getPart(object)
 end
 
 --==================================================
--- TELEPORT
+-- TELEPORT HELPER
+-- Used for Halloween doors only.
 --==================================================
 
 local function teleportTo(object)
@@ -200,7 +200,7 @@ local function teleportTo(object)
     end)
 
     if success then
-        task.wait(CANDY_WAIT)
+        task.wait(0.5)
     end
 
     return success
@@ -510,15 +510,14 @@ local function getCandies()
 end
 
 --==================================================
--- CANDY FARM + ZOMBIES
+-- CALM CANDY COLLECTION
+-- One candy at a time, walking instead of teleporting.
 --==================================================
 
 local function collectCandy()
     if not waitForAlive() then
         return
     end
-
-    attackZombies()
 
     local candies = getCandies()
 
@@ -531,21 +530,70 @@ local function collectCandy()
 
         if candy
             and candy:IsDescendantOf(Workspace)
-            and not CountedCandy[candy] then
+            and not CountedCandy[candy]
+            and not CandyCooldown[candy] then
 
-            teleportTo(candy)
+            local part = getPart(candy)
+            local humanoid = getHumanoid()
+            local root = getRoot()
 
-            if candy and not candy:IsDescendantOf(Workspace) then
-                CountedCandy[candy] = true
+            if not part or not humanoid or not root then
+                return
             end
 
-            attackZombies()
+            CandyCooldown[candy] = true
+
+            -- Walk toward the candy.
+            humanoid:MoveTo(part.Position)
+
+            local startTime = os.clock()
+
+            while Running
+                and candy:IsDescendantOf(Workspace)
+                and os.clock() - startTime < CANDY_MOVE_TIMEOUT do
+
+                if not waitForAlive() then
+                    return
+                end
+
+                part = getPart(candy)
+                root = getRoot()
+
+                if not part or not root then
+                    break
+                end
+
+                local distance =
+                    (root.Position - part.Position).Magnitude
+
+                if distance <= CANDY_PICKUP_DISTANCE then
+                    break
+                end
+
+                task.wait(0.2)
+            end
+
+            -- Wait for the pickup to register.
+            task.wait(1)
+
+            if not candy:IsDescendantOf(Workspace) then
+                CountedCandy[candy] = true
+                CandyCooldown[candy] = nil
+            else
+                -- Allow a retry after a short cooldown.
+                task.delay(CANDY_RETRY_COOLDOWN, function()
+                    CandyCooldown[candy] = nil
+                end)
+            end
+
+            -- Only handle one candy per call.
+            return
         end
     end
 end
 
 --==================================================
--- HALLOWEEN DOOR FARM + ZOMBIES
+-- HALLOWEEN DOOR FARM
 --==================================================
 
 local function farmDoor(door)
@@ -558,8 +606,6 @@ local function farmDoor(door)
         or isDoorOpened(door) then
         return
     end
-
-    attackZombies()
 
     if not teleportTo(door) then
         return
@@ -580,7 +626,6 @@ local function farmDoor(door)
     end
 
     collectCandy()
-    attackZombies()
 end
 
 --==================================================
@@ -588,8 +633,7 @@ end
 --==================================================
 
 local function queueAutoExecute()
-    -- AutoExecute is controlled by ServerHop.
-    if not ServerHop then
+    if not AutoExecute then
         return true
     end
 
@@ -610,11 +654,9 @@ local function queueAutoExecute()
     local loaderCode =
         'loadstring(game:HttpGet("' .. LOADER_URL .. '"))()'
 
-    local success = pcall(function()
+    return pcall(function()
         queueFunction(loaderCode)
     end)
-
-    return success
 end
 
 --==================================================
@@ -622,7 +664,6 @@ end
 --==================================================
 
 local function serverHop()
-    -- Never hop when ServerHop is disabled.
     if not ServerHop then
         return false
     end
@@ -672,7 +713,6 @@ local function serverHop()
             and server.maxPlayers
             and server.playing < server.maxPlayers then
 
-            -- Queue script before hopping.
             if not queueAutoExecute() then
                 return false
             end
@@ -724,17 +764,14 @@ task.spawn(function()
                 return
             end
 
-            -- Detect and attack nearby zombies.
-            attackZombies()
-
-            -- Collect nearby candy.
+            -- Find and farm nearby candy calmly.
             collectCandy()
 
             if not Running then
                 return
             end
 
-            -- Search for doors every cycle.
+            -- Search for Halloween doors.
             local doors = getDoors()
 
             for _, door in ipairs(doors) do
@@ -749,7 +786,6 @@ task.spawn(function()
                     farmDoor(door)
                 end
 
-                attackZombies()
                 task.wait(TREE_SWITCH_WAIT)
             end
 
@@ -757,12 +793,13 @@ task.spawn(function()
                 return
             end
 
-            -- Search for candy and zombies again.
+            -- Search for candy again after doors.
             collectCandy()
+
+            -- Attack zombies after candy movement.
             attackZombies()
 
-            -- ServerHop enabled: hop after all doors are opened.
-            -- ServerHop disabled: remain here and keep farming.
+            -- Hop only when enabled and all tracked doors are opened.
             if ServerHop then
                 local completed, total = allTreesOpened()
 
@@ -779,26 +816,23 @@ task.spawn(function()
             warn("[AXOMJB] Farm recovered from error:", tostring(err))
         end
 
-        -- Keep scanning even when no doors or candy are found.
         task.wait(SCAN_WAIT)
     end
 end)
 
 --==================================================
--- STARTUP RESET
+-- STARTUP
 --==================================================
 
 task.spawn(function()
     task.wait(2)
-
     loadOptimization(FIXLAG_URL)
 
     task.wait(1)
-
     loadOptimization(NORENDER_URL)
 end)
 
--- Reset once, then begin farming after respawn.
+-- Reset once, then farm after respawning.
 if not resetOnStart() then
     return
 end
