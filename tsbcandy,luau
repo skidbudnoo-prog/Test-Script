@@ -2,7 +2,8 @@
 --[[
     AXOMJB - HALLOWEEN AUTOFARM 🎃
     SAFE CANDY TELEPORT
-    HALLOWEEN DOOR FARM
+    DYNAMIC HALLOWEEN TREE DETECTION
+    TELEPORT TO NEWLY SPAWNED DOORS
     BACKGROUND ZOMBIE DETECTION ONLY
     NO FORCED RESET
     DEATH RECOVERY
@@ -38,6 +39,7 @@ local Player = Players.LocalPlayer
 --==================================================
 
 local OPEN_WAIT = 3
+
 local CANDY_SCAN_RADIUS = 100
 local ZOMBIE_SCAN_RADIUS = 60
 local ZOMBIE_SCAN_INTERVAL = 0.5
@@ -50,6 +52,10 @@ local CANDY_MAX_VERTICAL_DIFFERENCE = 15
 
 local TREE_SWITCH_WAIT = 0.5
 local SCAN_WAIT = 1
+
+-- Wait this long without discovering a new door before hopping.
+local DOOR_DISCOVERY_IDLE = 20
+local DOOR_RETRY_COOLDOWN = 5
 
 local DOOR_PATTERN = "^DOOR%s*%d+%s+NEW$"
 
@@ -67,12 +73,27 @@ local NORENDER_URL =
 --==================================================
 
 local Running = true
-local DoorRegistry = {}
-local CountedCandy = {}
-local CandyCooldown = {}
+
+local DoorRegistry = setmetatable({}, {
+    __mode = "k"
+})
+
+local DoorCooldown = setmetatable({}, {
+    __mode = "k"
+})
+
+local CountedCandy = setmetatable({}, {
+    __mode = "k"
+})
+
+local CandyCooldown = setmetatable({}, {
+    __mode = "k"
+})
 
 local NearbyZombies = {}
 local PreviousZombieCount = -1
+
+local LastDoorDiscovery = os.clock()
 
 --==================================================
 -- CANDY NAMES
@@ -213,7 +234,6 @@ local function scanNearbyZombies()
 
     NearbyZombies = found
 
-    -- Only print when the nearby zombie count changes.
     if #found ~= PreviousZombieCount then
         PreviousZombieCount = #found
 
@@ -228,7 +248,7 @@ local function scanNearbyZombies()
     end
 end
 
--- Run independently so zombie detection never interrupts farming.
+-- Independent scanner. It never attacks or interrupts farming.
 task.spawn(function()
     while Running do
         pcall(scanNearbyZombies)
@@ -335,48 +355,6 @@ local function interact(object)
 end
 
 --==================================================
--- FIND HALLOWEEN DOORS
---==================================================
-
-local function getDoors()
-    local folder = Workspace:FindFirstChild(
-        "HalloweenDoorTrees"
-    )
-
-    if not folder then
-        return {}
-    end
-
-    local template = folder:FindFirstChild(
-        "DoorTreeTemplate"
-    )
-
-    if not template then
-        return {}
-    end
-
-    local doors = {}
-
-    for _, object in ipairs(template:GetDescendants()) do
-        if object.Name:match(DOOR_PATTERN)
-            and getPart(object) then
-
-            table.insert(doors, object)
-            DoorRegistry[object] = true
-        end
-    end
-
-    table.sort(doors, function(a, b)
-        local aNumber = tonumber(a.Name:match("%d+")) or 0
-        local bNumber = tonumber(b.Name:match("%d+")) or 0
-
-        return aNumber < bNumber
-    end)
-
-    return doors
-end
-
---==================================================
 -- CHECK OPENED DOORS
 --==================================================
 
@@ -396,6 +374,74 @@ local function isDoorOpened(door)
 
     return false
 end
+
+--==================================================
+-- DYNAMIC HALLOWEEN DOOR SCANNER
+-- Scans the entire HalloweenDoorTrees folder.
+-- Does not rely on DoorTreeTemplate.
+--==================================================
+
+local function getDoors()
+    local folder = Workspace:FindFirstChild(
+        "HalloweenDoorTrees"
+    )
+
+    if not folder then
+        return {}
+    end
+
+    local doors = {}
+    local root = getRoot()
+
+    for _, object in ipairs(folder:GetDescendants()) do
+        if object.Name:match(DOOR_PATTERN)
+            and getPart(object) then
+
+            -- Register newly spawned doors.
+            if not DoorRegistry[object] then
+                DoorRegistry[object] = true
+                LastDoorDiscovery = os.clock()
+
+                print(
+                    "[AXOMJB] New Halloween door detected:",
+                    object.Name
+                )
+            end
+
+            if not isDoorOpened(object) then
+                local cooldownUntil = DoorCooldown[object]
+
+                if not cooldownUntil
+                    or os.clock() >= cooldownUntil then
+
+                    local part = getPart(object)
+                    local distance = math.huge
+
+                    if root and part then
+                        distance =
+                            (part.Position - root.Position).Magnitude
+                    end
+
+                    table.insert(doors, {
+                        Object = object,
+                        Distance = distance
+                    })
+                end
+            end
+        end
+    end
+
+    -- Visit the closest unopened door first.
+    table.sort(doors, function(a, b)
+        return a.Distance < b.Distance
+    end)
+
+    return doors
+end
+
+--==================================================
+-- CHECK ALL DISCOVERED DOORS
+--==================================================
 
 local function allTreesOpened()
     local total = 0
@@ -643,7 +689,7 @@ local function collectCandy()
 end
 
 --==================================================
--- HALLOWEEN DOOR FARM
+-- FARM ONE DOOR
 --==================================================
 
 local function farmDoor(door)
@@ -657,7 +703,11 @@ local function farmDoor(door)
         return
     end
 
-    if not teleportTo(door) then
+    local success = teleportTo(door)
+
+    if not success then
+        DoorCooldown[door] =
+            os.clock() + DOOR_RETRY_COOLDOWN
         return
     end
 
@@ -673,6 +723,19 @@ local function farmDoor(door)
 
     if not Running then
         return
+    end
+
+    if isDoorOpened(door) then
+        DoorCooldown[door] = nil
+        print("[AXOMJB] Door opened:", door.Name)
+    else
+        DoorCooldown[door] =
+            os.clock() + DOOR_RETRY_COOLDOWN
+
+        warn(
+            "[AXOMJB] Door did not open; will retry:",
+            door.Name
+        )
     end
 
     collectCandy()
@@ -820,7 +883,7 @@ end)
 --==================================================
 -- MAIN FARM LOOP
 -- NO FORCED RESET
--- ZOMBIE SCANNER RUNS IN BACKGROUND
+-- DYNAMIC DOOR DISCOVERY
 --==================================================
 
 while Running do
@@ -829,43 +892,54 @@ while Running do
             return
         end
 
-        -- Collect one closest safe candy.
+        -- Collect candy first.
         collectCandy()
 
         if not Running then
             return
         end
 
-        -- Continue searching for doors.
+        -- Scan the entire HalloweenDoorTrees folder again.
+        -- This finds newly spawned doors too.
         local doors = getDoors()
 
-        for _, door in ipairs(doors) do
-            if not Running or not waitForAlive() then
-                return
+        if #doors > 0 then
+            -- Only handle one door per loop.
+            -- The next loop scans again for newly spawned doors.
+            local nextDoor = doors[1]
+
+            if nextDoor and nextDoor.Object then
+                farmDoor(nextDoor.Object)
             end
-
-            if door
-                and door:IsDescendantOf(Workspace)
-                and not isDoorOpened(door) then
-
-                farmDoor(door)
-            end
-
-            task.wait(TREE_SWITCH_WAIT)
+        else
+            -- No currently available unopened doors.
+            -- Continue candy collection while waiting for new trees.
+            collectCandy()
         end
 
         if not Running then
             return
         end
 
-        -- Search for another candy after door farming.
-        collectCandy()
+        -- Scan again after farming in case a tree spawned meanwhile.
+        getDoors()
 
-        -- Server hop only after all tracked doors are opened.
+        -- Server hop only when every discovered door is open
+        -- and no new door has appeared for the idle period.
         if ServerHop then
             local completed, total = allTreesOpened()
 
-            if completed and total > 0 then
+            local quietTime =
+                os.clock() - LastDoorDiscovery
+
+            if completed
+                and total > 0
+                and quietTime >= DOOR_DISCOVERY_IDLE then
+
+                print(
+                    "[AXOMJB] All discovered doors opened. Server hopping..."
+                )
+
                 if serverHop() then
                     Running = false
                     return
