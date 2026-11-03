@@ -1,7 +1,7 @@
 
 --[[
     AXOMJB - HALLOWEEN AUTOFARM 🎃
-    SAFE CANDY COLLECTION
+    SAFE CANDY TELEPORT
     HALLOWEEN DOOR FARM
     NEARBY ZOMBIE DETECTION
     AUTO RESET + DEATH RECOVERY
@@ -39,14 +39,15 @@ local Player = Players.LocalPlayer
 local OPEN_WAIT = 3
 local CANDY_SCAN_RADIUS = 100
 local ZOMBIE_SCAN_RADIUS = 60
+
+local CANDY_TELEPORT_DELAY = 1.5
+local CANDY_RETRY_COOLDOWN = 5
+local CANDY_GROUND_CHECK_DISTANCE = 80
+local CANDY_MAX_GROUND_DROP = 22
+local CANDY_MAX_VERTICAL_DIFFERENCE = 15
+
 local TREE_SWITCH_WAIT = 0.5
 local SCAN_WAIT = 1
-
-local CANDY_PICKUP_DISTANCE = 5
-local CANDY_MOVE_TIMEOUT = 8
-local CANDY_RETRY_COOLDOWN = 5
-local CANDY_MAX_VERTICAL_DIFFERENCE = 12
-local CANDY_GROUND_CHECK_DISTANCE = 35
 
 local DOOR_PATTERN = "^DOOR%s*%d+%s+NEW$"
 
@@ -182,7 +183,7 @@ end
 
 --==================================================
 -- DOOR TELEPORT
--- Candy collection does NOT use this function.
+-- Candy collection uses a separate safe teleport.
 --==================================================
 
 local function teleportTo(object)
@@ -198,12 +199,12 @@ local function teleportTo(object)
 
     local success = pcall(function()
         getCharacter():PivotTo(
-            CFrame.new(part.Position + Vector3.new(0, 2, 0))
+            CFrame.new(part.Position + Vector3.new(0, 3, 0))
         )
     end)
 
     if success then
-        task.wait(0.5)
+        task.wait(0.8)
     end
 
     return success
@@ -476,7 +477,7 @@ local function attackZombies()
 end
 
 --==================================================
--- SAFE CANDY PART FINDER
+-- FIND THE CLOSEST CANDY PART
 --==================================================
 
 local function getCandyPart(object, root)
@@ -488,11 +489,9 @@ local function getCandyPart(object, root)
     local bestDistance = math.huge
 
     if object:IsA("BasePart") then
-        local distance =
-            (object.Position - root.Position).Magnitude
-
         bestPart = object
-        bestDistance = distance
+        bestDistance =
+            (object.Position - root.Position).Magnitude
     end
 
     for _, item in ipairs(object:GetDescendants()) do
@@ -511,22 +510,23 @@ local function getCandyPart(object, root)
 end
 
 --==================================================
--- CHECK SAFE GROUND
+-- FIND SAFE GROUND UNDER CANDY
 --==================================================
 
-local function hasSafeGround(part)
-    if not part then
-        return false
+local function getSafeCandyPosition(candy, part)
+    if not candy or not part then
+        return nil
     end
 
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Exclude
     params.FilterDescendantsInstances = {
         Player.Character,
-        part.Parent
+        candy
     }
+    params.RespectCanCollide = true
 
-    local origin = part.Position + Vector3.new(0, 5, 0)
+    local origin = part.Position + Vector3.new(0, 8, 0)
     local direction = Vector3.new(
         0,
         -CANDY_GROUND_CHECK_DISTANCE,
@@ -539,7 +539,46 @@ local function hasSafeGround(part)
         params
     )
 
-    return result ~= nil
+    if not result then
+        return nil
+    end
+
+    -- Reject water.
+    if result.Material == Enum.Material.Water then
+        return nil
+    end
+
+    -- Reject steep surfaces.
+    if result.Normal.Y < 0.7 then
+        return nil
+    end
+
+    -- Reject non-collidable ground parts.
+    if result.Instance:IsA("BasePart")
+        and not result.Instance.CanCollide then
+        return nil
+    end
+
+    local groundDrop =
+        part.Position.Y - result.Position.Y
+
+    -- Reject large drops and likely void destinations.
+    if groundDrop < -5
+        or groundDrop > CANDY_MAX_GROUND_DROP then
+        return nil
+    end
+
+    local humanoid = getHumanoid()
+    local root = getRoot()
+
+    if not humanoid or not root then
+        return nil
+    end
+
+    local standingHeight =
+        humanoid.HipHeight + (root.Size.Y / 2) + 0.5
+
+    return result.Position + Vector3.new(0, standingHeight, 0)
 end
 
 --==================================================
@@ -554,29 +593,42 @@ local function getCandies()
         return candies
     end
 
+    local seen = {}
+
     for _, object in ipairs(Workspace:GetDescendants()) do
         if CandyNames[object.Name]
-            and not CountedCandy[object]
-            and not CandyCooldown[object] then
+            and not seen[object]
+            and not CountedCandy[object] then
 
-            local part = getCandyPart(object, root)
+            seen[object] = true
 
-            if part then
-                local distance =
-                    (part.Position - root.Position).Magnitude
+            local cooldownUntil = CandyCooldown[object]
 
-                local verticalDifference =
-                    math.abs(part.Position.Y - root.Position.Y)
+            if not cooldownUntil or os.clock() >= cooldownUntil then
+                local part = getCandyPart(object, root)
 
-                if distance <= CANDY_SCAN_RADIUS
-                    and verticalDifference <= CANDY_MAX_VERTICAL_DIFFERENCE
-                    and hasSafeGround(part) then
+                if part then
+                    local verticalDifference =
+                        math.abs(part.Position.Y - root.Position.Y)
 
-                    table.insert(candies, {
-                        Object = object,
-                        Part = part,
-                        Distance = distance
-                    })
+                    if verticalDifference <= CANDY_MAX_VERTICAL_DIFFERENCE then
+                        local safePosition =
+                            getSafeCandyPosition(object, part)
+
+                        if safePosition then
+                            local distance =
+                                (safePosition - root.Position).Magnitude
+
+                            if distance <= CANDY_SCAN_RADIUS then
+                                table.insert(candies, {
+                                    Object = object,
+                                    Part = part,
+                                    Position = safePosition,
+                                    Distance = distance
+                                })
+                            end
+                        end
+                    end
                 end
             end
         end
@@ -590,8 +642,7 @@ local function getCandies()
 end
 
 --==================================================
--- SAFE CANDY COLLECTION
--- One candy at a time. Never teleports to candy.
+-- SAFE, SLOW CANDY TELEPORT
 --==================================================
 
 local function collectCandy()
@@ -616,71 +667,52 @@ local function collectCandy()
             continue
         end
 
-        local humanoid = getHumanoid()
         local root = getRoot()
+        local character = getCharacter()
 
-        if not humanoid or not root then
+        if not root or not character then
             return
         end
 
-        if not hasSafeGround(part) then
-            CandyCooldown[candy] = true
+        -- Recalculate the safe position right before teleporting.
+        local safePosition =
+            getSafeCandyPosition(candy, part)
 
-            task.delay(CANDY_RETRY_COOLDOWN, function()
-                CandyCooldown[candy] = nil
-            end)
+        if not safePosition then
+            CandyCooldown[candy] =
+                os.clock() + CANDY_RETRY_COOLDOWN
 
             continue
         end
 
-        CandyCooldown[candy] = true
+        -- Confirm the destination is still within range.
+        local distance =
+            (safePosition - root.Position).Magnitude
 
-        -- Walk to the nearest candy.
-        humanoid:MoveTo(part.Position)
-
-        local startTime = os.clock()
-
-        while Running
-            and candy:IsDescendantOf(Workspace)
-            and os.clock() - startTime < CANDY_MOVE_TIMEOUT do
-
-            if not waitForAlive() then
-                return
-            end
-
-            root = getRoot()
-            part = getCandyPart(candy, root)
-
-            if not root or not part then
-                break
-            end
-
-            local distance =
-                (root.Position - part.Position).Magnitude
-
-            if distance <= CANDY_PICKUP_DISTANCE then
-                break
-            end
-
-            if not hasSafeGround(part) then
-                break
-            end
-
-            task.wait(0.25)
+        if distance > CANDY_SCAN_RADIUS then
+            continue
         end
 
-        task.wait(1)
+        -- Teleport to the checked ground position.
+        local success = pcall(function()
+            character:PivotTo(CFrame.new(safePosition))
+        end)
 
+        if success then
+            -- Slow down collection to prevent rapid bouncing.
+            task.wait(CANDY_TELEPORT_DELAY)
+        end
+
+        -- Check whether the game removed the collected candy.
         if not candy:IsDescendantOf(Workspace) then
             CountedCandy[candy] = true
             CandyCooldown[candy] = nil
         else
-            task.delay(CANDY_RETRY_COOLDOWN, function()
-                CandyCooldown[candy] = nil
-            end)
+            CandyCooldown[candy] =
+                os.clock() + CANDY_RETRY_COOLDOWN
         end
 
-        -- One candy per call.
+        -- Only collect one candy per call.
         return
     end
 end
@@ -747,9 +779,11 @@ local function queueAutoExecute()
     local loaderCode =
         'loadstring(game:HttpGet("' .. LOADER_URL .. '"))()'
 
-    return pcall(function()
+    local success = pcall(function()
         queueFunction(loaderCode)
     end)
+
+    return success
 end
 
 --==================================================
@@ -847,76 +881,6 @@ local function loadOptimization(url)
 end
 
 --==================================================
--- MAIN FARM LOOP
---==================================================
-
-task.spawn(function()
-    while Running do
-        local success, err = pcall(function()
-            if not waitForAlive() then
-                return
-            end
-
-            -- Collect one nearby safe candy.
-            collectCandy()
-
-            if not Running then
-                return
-            end
-
-            -- Search for Halloween doors.
-            local doors = getDoors()
-
-            for _, door in ipairs(doors) do
-                if not Running or not waitForAlive() then
-                    return
-                end
-
-                if door
-                    and door:IsDescendantOf(Workspace)
-                    and not isDoorOpened(door) then
-
-                    farmDoor(door)
-                end
-
-                task.wait(TREE_SWITCH_WAIT)
-            end
-
-            if not Running then
-                return
-            end
-
-            -- Continue candy collection.
-            collectCandy()
-
-            -- Attack nearby zombies.
-            attackZombies()
-
-            -- Hop only when enabled and doors are complete.
-            if ServerHop then
-                local completed, total = allTreesOpened()
-
-                if completed and total > 0 then
-                    if serverHop() then
-                        Running = false
-                        return
-                    end
-                end
-            end
-        end)
-
-        if not success then
-            warn(
-                "[AXOMJB] Farm recovered from error:",
-                tostring(err)
-            )
-        end
-
-        task.wait(SCAN_WAIT)
-    end
-end)
-
---==================================================
 -- STARTUP OPTIMIZATIONS
 --==================================================
 
@@ -929,9 +893,78 @@ task.spawn(function()
 end)
 
 --==================================================
--- STARTUP RESET
+-- RESET BEFORE STARTING FARM
 --==================================================
 
 if not resetOnStart() then
     return
+end
+
+--==================================================
+-- MAIN FARM LOOP
+--==================================================
+
+while Running do
+    local success, err = pcall(function()
+        if not waitForAlive() then
+            return
+        end
+
+        -- Collect one closest safe candy.
+        collectCandy()
+
+        if not Running then
+            return
+        end
+
+        -- Always continue searching for doors,
+        -- even when there are no available candies.
+        local doors = getDoors()
+
+        for _, door in ipairs(doors) do
+            if not Running or not waitForAlive() then
+                return
+            end
+
+            if door
+                and door:IsDescendantOf(Workspace)
+                and not isDoorOpened(door) then
+
+                farmDoor(door)
+            end
+
+            task.wait(TREE_SWITCH_WAIT)
+        end
+
+        if not Running then
+            return
+        end
+
+        -- Search for another candy after door farming.
+        collectCandy()
+
+        -- Attack nearby zombies.
+        attackZombies()
+
+        -- Hop only after all tracked doors are opened.
+        if ServerHop then
+            local completed, total = allTreesOpened()
+
+            if completed and total > 0 then
+                if serverHop() then
+                    Running = false
+                    return
+                end
+            end
+        end
+    end)
+
+    if not success then
+        warn(
+            "[AXOMJB] Farm recovered from error:",
+            tostring(err)
+        )
+    end
+
+    task.wait(SCAN_WAIT)
 end
