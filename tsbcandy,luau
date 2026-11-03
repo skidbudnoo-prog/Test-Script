@@ -1,9 +1,10 @@
 
 --[[
     AXOMJB - HALLOWEEN AUTOFARM 🎃
-    NO UI | AUTO RESET | CANDY FARM
-    HALLOWEEN DOOR FARM | NEARBY ZOMBIES
-    DEATH RECOVERY | AUTO EXECUTE | SERVER HOP
+    NO UI | AUTO RESET
+    CANDY FARM | HALLOWEEN DOOR FARM
+    NEARBY ZOMBIE DETECTION
+    DEATH RECOVERY | SERVER HOP + AUTO EXECUTE
 ]]
 
 local Env = (getgenv and getgenv()) or _G
@@ -12,15 +13,14 @@ local Env = (getgenv and getgenv()) or _G
 -- SETTINGS
 --==================================================
 
-local AutoExecute = Env.AutoExecute
-if AutoExecute == nil then AutoExecute = true end
-
--- Supports both ServerHop and AutoHop.
-local AutoHop = Env.ServerHop
-if AutoHop == nil then
-    AutoHop = Env.AutoHop
+-- ONE SETTING CONTROLS SERVER HOP AND AUTO EXECUTE
+local ServerHop = Env.ServerHop
+if ServerHop == nil then
+    ServerHop = false
 end
-if AutoHop == nil then AutoHop = false end
+
+-- AutoExecute is tied to ServerHop.
+local AutoExecute = ServerHop
 
 --==================================================
 -- SERVICES
@@ -63,8 +63,6 @@ local NORENDER_URL =
 local Running = true
 local DoorRegistry = {}
 local CountedCandy = {}
-
-local LastError = nil
 
 --==================================================
 -- CANDY NAMES
@@ -131,7 +129,7 @@ local function waitForAlive()
 end
 
 --==================================================
--- AUTOMATIC RESET ON SCRIPT LOAD
+-- AUTOMATIC RESET ON START
 --==================================================
 
 local function resetOnStart()
@@ -149,17 +147,13 @@ local function resetOnStart()
     -- Reset once when the script starts.
     pcall(function()
         humanoid.Health = 0
-        humanoid:ChangeState(
-            Enum.HumanoidStateType.Dead
-        )
     end)
 
-    -- Wait for the replacement character.
+    -- Wait for replacement character.
     while Running and Player.Character == oldCharacter do
         task.wait(0.25)
     end
 
-    -- Wait until the new character is usable.
     return waitForAlive()
 end
 
@@ -360,7 +354,7 @@ local function allTreesOpened()
 end
 
 --==================================================
--- FIND NEARBY ZOMBIES
+-- NEARBY ZOMBIE DETECTION
 --==================================================
 
 local function getZombies()
@@ -431,7 +425,6 @@ local function attackZombies()
                     return
                 end
 
-                -- Recheck distance before attacking.
                 local distance =
                     (target.Position - root.Position).Magnitude
 
@@ -525,7 +518,6 @@ local function collectCandy()
         return
     end
 
-    -- Check for zombies even when no candy exists.
     attackZombies()
 
     local candies = getCandies()
@@ -547,7 +539,6 @@ local function collectCandy()
                 CountedCandy[candy] = true
             end
 
-            -- Keep detecting zombies while collecting.
             attackZombies()
         end
     end
@@ -593,11 +584,12 @@ local function farmDoor(door)
 end
 
 --==================================================
--- AUTO EXECUTE ON TELEPORT
+-- AUTO EXECUTE ON SERVER HOP
 --==================================================
 
 local function queueAutoExecute()
-    if not AutoExecute then
+    -- AutoExecute is controlled by ServerHop.
+    if not ServerHop then
         return true
     end
 
@@ -618,9 +610,11 @@ local function queueAutoExecute()
     local loaderCode =
         'loadstring(game:HttpGet("' .. LOADER_URL .. '"))()'
 
-    return pcall(function()
+    local success = pcall(function()
         queueFunction(loaderCode)
     end)
+
+    return success
 end
 
 --==================================================
@@ -628,7 +622,8 @@ end
 --==================================================
 
 local function serverHop()
-    if not AutoHop then
+    -- Never hop when ServerHop is disabled.
+    if not ServerHop then
         return false
     end
 
@@ -677,6 +672,7 @@ local function serverHop()
             and server.maxPlayers
             and server.playing < server.maxPlayers then
 
+            -- Queue script before hopping.
             if not queueAutoExecute() then
                 return false
             end
@@ -718,15 +714,6 @@ local function loadOptimization(url)
 end
 
 --==================================================
--- STARTUP
---==================================================
-
--- Reset once, then wait for the new character.
-if not resetOnStart() then
-    return
-end
-
---==================================================
 -- MAIN FARM LOOP
 --==================================================
 
@@ -737,17 +724,17 @@ task.spawn(function()
                 return
             end
 
-            -- Always check nearby zombies.
+            -- Detect and attack nearby zombies.
             attackZombies()
 
-            -- Search and collect candy.
+            -- Collect nearby candy.
             collectCandy()
 
             if not Running then
                 return
             end
 
-            -- Search for doors again every cycle.
+            -- Search for doors every cycle.
             local doors = getDoors()
 
             for _, door in ipairs(doors) do
@@ -762,9 +749,7 @@ task.spawn(function()
                     farmDoor(door)
                 end
 
-                -- Continue checking nearby zombies.
                 attackZombies()
-
                 task.wait(TREE_SWITCH_WAIT)
             end
 
@@ -776,8 +761,9 @@ task.spawn(function()
             collectCandy()
             attackZombies()
 
-            -- Only hop when enabled and all registered doors are open.
-            if AutoHop then
+            -- ServerHop enabled: hop after all doors are opened.
+            -- ServerHop disabled: remain here and keep farming.
+            if ServerHop then
                 local completed, total = allTreesOpened()
 
                 if completed and total > 0 then
@@ -790,23 +776,29 @@ task.spawn(function()
         end)
 
         if not success then
-            LastError = tostring(err)
-            warn("[AXOMJB] Farm recovered from error:", LastError)
+            warn("[AXOMJB] Farm recovered from error:", tostring(err))
         end
 
-        -- Never permanently stop just because a scan found nothing.
+        -- Keep scanning even when no doors or candy are found.
         task.wait(SCAN_WAIT)
     end
 end)
 
 --==================================================
--- LOAD OPTIMIZATIONS
+-- STARTUP RESET
 --==================================================
 
 task.spawn(function()
     task.wait(2)
+
     loadOptimization(FIXLAG_URL)
 
     task.wait(1)
+
     loadOptimization(NORENDER_URL)
 end)
+
+-- Reset once, then begin farming after respawn.
+if not resetOnStart() then
+    return
+end
