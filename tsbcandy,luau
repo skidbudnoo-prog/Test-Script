@@ -1,21 +1,31 @@
 
 --[[
     AXOMJB - HALLOWEEN AUTOFARM 🎃
-    No UI | Candy Farm | Halloween Door Farm
-    Nearby Zombie Detection | Death Recovery
-    Auto Execute | Server Hop
+    NO UI | AUTO RESET | CANDY FARM
+    HALLOWEEN DOOR FARM | NEARBY ZOMBIES
+    DEATH RECOVERY | AUTO EXECUTE | SERVER HOP
 ]]
 
 local Env = (getgenv and getgenv()) or _G
 
---// SETTINGS
+--==================================================
+-- SETTINGS
+--==================================================
+
 local AutoExecute = Env.AutoExecute
 if AutoExecute == nil then AutoExecute = true end
 
-local AutoHop = Env.AutoHop
+-- Supports both ServerHop and AutoHop.
+local AutoHop = Env.ServerHop
+if AutoHop == nil then
+    AutoHop = Env.AutoHop
+end
 if AutoHop == nil then AutoHop = false end
 
---// SERVICES
+--==================================================
+-- SERVICES
+--==================================================
+
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local TeleportService = game:GetService("TeleportService")
@@ -23,35 +33,55 @@ local HttpService = game:GetService("HttpService")
 
 local Player = Players.LocalPlayer
 
---// CONFIGURATION
-local HOLD_TIME = 0
+--==================================================
+-- CONFIGURATION
+--==================================================
+
 local OPEN_WAIT = 3
 local CANDY_WAIT = 0.5
 local CANDY_SCAN_RADIUS = 100
 local ZOMBIE_SCAN_RADIUS = 60
 local TREE_SWITCH_WAIT = 0.3
 local RECOVERY_WAIT = 2
+local SCAN_WAIT = 1
+
 local DOOR_PATTERN = "^DOOR%s*%d+%s+NEW$"
 
 local LOADER_URL =
     "https://raw.githubusercontent.com/skidbudnoo-prog/Test-Script/refs/heads/main/tsbcandy%2Cluau"
 
---// RUNTIME
+local FIXLAG_URL =
+    "https://raw.githubusercontent.com/SkibidiFart123patapim/OpenSource/refs/heads/main/FixLag.luau"
+
+local NORENDER_URL =
+    "https://raw.githubusercontent.com/SkibidiFart123patapim/OpenSource/refs/heads/main/NoRender.luau"
+
+--==================================================
+-- RUNTIME
+--==================================================
+
 local Running = true
-local CandyCount = 0
 local DoorRegistry = {}
 local CountedCandy = {}
 
---// CANDY NAMES
+local LastError = nil
+
+--==================================================
+-- CANDY NAMES
+--==================================================
+
 local CandyNames = {
     BloxRoll = true,
     BloxyDrops = true,
     Chocoblox = true,
+
     DarkOrangeCandy1 = true,
     DarkOrangeCandy2 = true,
     DarkOrangeCandy3 = true,
     DarkOrangeCandy4 = true,
+
     MrBloxBar = true,
+
     OrangeCandy1 = true,
     OrangeCandy2 = true,
     OrangeCandy3 = true,
@@ -59,7 +89,7 @@ local CandyNames = {
 }
 
 --==================================================
--- CHARACTER
+-- CHARACTER HELPERS
 --==================================================
 
 local function getCharacter()
@@ -68,12 +98,16 @@ end
 
 local function getHumanoid()
     local character = getCharacter()
-    return character and character:FindFirstChildWhichIsA("Humanoid")
+
+    return character
+        and character:FindFirstChildWhichIsA("Humanoid")
 end
 
 local function getRoot()
     local character = getCharacter()
-    return character and character:FindFirstChild("HumanoidRootPart")
+
+    return character
+        and character:FindFirstChild("HumanoidRootPart")
 end
 
 local function isAlive()
@@ -94,6 +128,39 @@ local function waitForAlive()
     end
 
     return false
+end
+
+--==================================================
+-- AUTOMATIC RESET ON SCRIPT LOAD
+--==================================================
+
+local function resetOnStart()
+    if not waitForAlive() then
+        return false
+    end
+
+    local oldCharacter = getCharacter()
+    local humanoid = getHumanoid()
+
+    if not oldCharacter or not humanoid then
+        return false
+    end
+
+    -- Reset once when the script starts.
+    pcall(function()
+        humanoid.Health = 0
+        humanoid:ChangeState(
+            Enum.HumanoidStateType.Dead
+        )
+    end)
+
+    -- Wait for the replacement character.
+    while Running and Player.Character == oldCharacter do
+        task.wait(0.25)
+    end
+
+    -- Wait until the new character is usable.
+    return waitForAlive()
 end
 
 --==================================================
@@ -128,7 +195,7 @@ local function teleportTo(object)
 
     local part = getPart(object)
 
-    if not part then
+    if not part or not part:IsDescendantOf(Workspace) then
         return false
     end
 
@@ -210,32 +277,38 @@ local function interact(object)
 
     return pcall(function()
         prompt:InputHoldBegin()
-        task.wait(math.max(prompt.HoldDuration, HOLD_TIME))
+        task.wait(prompt.HoldDuration)
         prompt:InputHoldEnd()
     end)
 end
 
 --==================================================
--- FIND HALLOWEEN TREES
+-- FIND HALLOWEEN DOORS
 --==================================================
 
 local function getDoors()
-    local folder = Workspace:FindFirstChild("HalloweenDoorTrees")
+    local folder = Workspace:FindFirstChild(
+        "HalloweenDoorTrees"
+    )
 
     if not folder then
-        return nil
+        return {}
     end
 
-    local template = folder:FindFirstChild("DoorTreeTemplate")
+    local template = folder:FindFirstChild(
+        "DoorTreeTemplate"
+    )
 
     if not template then
-        return nil
+        return {}
     end
 
     local doors = {}
 
     for _, object in ipairs(template:GetDescendants()) do
-        if object.Name:match(DOOR_PATTERN) and getPart(object) then
+        if object.Name:match(DOOR_PATTERN)
+            and getPart(object) then
+
             table.insert(doors, object)
             DoorRegistry[object] = true
         end
@@ -252,7 +325,7 @@ local function getDoors()
 end
 
 --==================================================
--- CHECK OPENED TREES
+-- CHECK OPENED DOORS
 --==================================================
 
 local function isDoorOpened(door)
@@ -287,7 +360,7 @@ local function allTreesOpened()
 end
 
 --==================================================
--- NEARBY ZOMBIE DETECTION
+-- FIND NEARBY ZOMBIES
 --==================================================
 
 local function getZombies()
@@ -349,57 +422,65 @@ local function attackZombies()
 
         local zombie = entry.Model
 
-        if not zombie or not zombie.Parent then
-            continue
+        if zombie and zombie.Parent then
+            pcall(function()
+                local target = getPart(zombie)
+                local root = getRoot()
+
+                if not target or not root then
+                    return
+                end
+
+                -- Recheck distance before attacking.
+                local distance =
+                    (target.Position - root.Position).Magnitude
+
+                if distance > ZOMBIE_SCAN_RADIUS then
+                    return
+                end
+
+                root.CFrame = CFrame.lookAt(
+                    root.Position,
+                    target.Position
+                )
+
+                for _ = 1, 5 do
+                    if not Running or not zombie.Parent then
+                        break
+                    end
+
+                    if not waitForAlive() then
+                        break
+                    end
+
+                    local zombieHumanoid =
+                        zombie:FindFirstChildWhichIsA("Humanoid")
+
+                    if not zombieHumanoid
+                        or zombieHumanoid.Health <= 0 then
+                        break
+                    end
+
+                    local character = getCharacter()
+
+                    local tool = character
+                        and character:FindFirstChildWhichIsA("Tool")
+
+                    if tool then
+                        pcall(function()
+                            tool:Activate()
+                        end)
+                    end
+
+                    task.wait(0.35)
+                end
+            end)
         end
-
-        pcall(function()
-            local target = getPart(zombie)
-            local root = getRoot()
-
-            if not target or not root then
-                return
-            end
-
-            root.CFrame = CFrame.lookAt(
-                root.Position,
-                target.Position
-            )
-
-            for _ = 1, 5 do
-                if not Running or not zombie.Parent then
-                    break
-                end
-
-                if not waitForAlive() then
-                    break
-                end
-
-                local zombieHumanoid =
-                    zombie:FindFirstChildWhichIsA("Humanoid")
-
-                if not zombieHumanoid
-                    or zombieHumanoid.Health <= 0 then
-                    break
-                end
-
-                local character = getCharacter()
-
-                local tool = character
-                    and character:FindFirstChildWhichIsA("Tool")
-
-                if tool then
-                    tool:Activate()
-                end
-
-                task.wait(0.35)
-            end
-        end)
     end
 end
 
 --==================================================
--- CANDY SCANNER
+-- FIND CANDY
 --==================================================
 
 local function getCandies()
@@ -436,7 +517,7 @@ local function getCandies()
 end
 
 --==================================================
--- CANDY FARM + ZOMBIE FARM
+-- CANDY FARM + ZOMBIES
 --==================================================
 
 local function collectCandy()
@@ -444,7 +525,7 @@ local function collectCandy()
         return
     end
 
-    -- Detect and attack nearby zombies first.
+    -- Check for zombies even when no candy exists.
     attackZombies()
 
     local candies = getCandies()
@@ -460,25 +541,20 @@ local function collectCandy()
             and candy:IsDescendantOf(Workspace)
             and not CountedCandy[candy] then
 
-            local success = teleportTo(candy)
+            teleportTo(candy)
 
-            if success then
-                task.wait(0.3)
-
-                if not candy:IsDescendantOf(Workspace) then
-                    CountedCandy[candy] = true
-                    CandyCount = CandyCount + 1
-                end
+            if candy and not candy:IsDescendantOf(Workspace) then
+                CountedCandy[candy] = true
             end
 
-            -- Detect nearby zombies again after collecting.
+            -- Keep detecting zombies while collecting.
             attackZombies()
         end
     end
 end
 
 --==================================================
--- HALLOWEEN DOOR FARM + ZOMBIE FARM
+-- HALLOWEEN DOOR FARM + ZOMBIES
 --==================================================
 
 local function farmDoor(door)
@@ -492,7 +568,6 @@ local function farmDoor(door)
         return
     end
 
-    -- Attack nearby zombies before opening the door.
     attackZombies()
 
     if not teleportTo(door) then
@@ -513,7 +588,6 @@ local function farmDoor(door)
         return
     end
 
-    -- Continue candy and zombie farming.
     collectCandy()
     attackZombies()
 end
@@ -625,7 +699,7 @@ local function serverHop()
 end
 
 --==================================================
--- OPTIMIZATION
+-- OPTIMIZATION SCRIPTS
 --==================================================
 
 local function loadOptimization(url)
@@ -644,39 +718,52 @@ local function loadOptimization(url)
 end
 
 --==================================================
+-- STARTUP
+--==================================================
+
+-- Reset once, then wait for the new character.
+if not resetOnStart() then
+    return
+end
+
+--==================================================
 -- MAIN FARM LOOP
 --==================================================
 
 task.spawn(function()
     while Running do
-        local success = pcall(function()
+        local success, err = pcall(function()
             if not waitForAlive() then
                 return
             end
 
-            -- Candy farm with nearby zombie detection.
+            -- Always check nearby zombies.
+            attackZombies()
+
+            -- Search and collect candy.
             collectCandy()
 
             if not Running then
                 return
             end
 
+            -- Search for doors again every cycle.
             local doors = getDoors()
 
-            if not doors then
-                task.wait(RECOVERY_WAIT)
-                return
-            end
-
-            -- Door farm with nearby zombie detection.
             for _, door in ipairs(doors) do
                 if not Running or not waitForAlive() then
                     return
                 end
 
-                if door and not isDoorOpened(door) then
+                if door
+                    and door:IsDescendantOf(Workspace)
+                    and not isDoorOpened(door) then
+
                     farmDoor(door)
                 end
+
+                -- Continue checking nearby zombies.
+                attackZombies()
 
                 task.wait(TREE_SWITCH_WAIT)
             end
@@ -685,7 +772,11 @@ task.spawn(function()
                 return
             end
 
-            -- Hop only after all registered doors are opened.
+            -- Search for candy and zombies again.
+            collectCandy()
+            attackZombies()
+
+            -- Only hop when enabled and all registered doors are open.
             if AutoHop then
                 local completed, total = allTreesOpened()
 
@@ -694,17 +785,17 @@ task.spawn(function()
                         Running = false
                         return
                     end
-
-                    task.wait(RECOVERY_WAIT)
                 end
             end
         end)
 
         if not success then
-            task.wait(RECOVERY_WAIT)
+            LastError = tostring(err)
+            warn("[AXOMJB] Farm recovered from error:", LastError)
         end
 
-        task.wait(0.1)
+        -- Never permanently stop just because a scan found nothing.
+        task.wait(SCAN_WAIT)
     end
 end)
 
@@ -714,14 +805,8 @@ end)
 
 task.spawn(function()
     task.wait(2)
-
-    loadOptimization(
-        "https://raw.githubusercontent.com/SkibidiFart123patapim/OpenSource/refs/heads/main/FixLag.luau"
-    )
+    loadOptimization(FIXLAG_URL)
 
     task.wait(1)
-
-    loadOptimization(
-        "https://raw.githubusercontent.com/SkibidiFart123patapim/OpenSource/refs/heads/main/NoRender.luau"
-    )
+    loadOptimization(NORENDER_URL)
 end)
