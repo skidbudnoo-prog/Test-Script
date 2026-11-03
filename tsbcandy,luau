@@ -1,8 +1,9 @@
 
 --[[
     AXOMJB - HALLOWEEN AUTOFARM 🎃
-    No UI | Candy + Zombies | Trees + Zombies
-    Death Recovery | Auto Execute | Server Hop
+    No UI | Candy Farm | Halloween Door Farm
+    Nearby Zombie Detection | Death Recovery
+    Auto Execute | Server Hop
 ]]
 
 local Env = (getgenv and getgenv()) or _G
@@ -27,6 +28,7 @@ local HOLD_TIME = 0
 local OPEN_WAIT = 3
 local CANDY_WAIT = 0.5
 local CANDY_SCAN_RADIUS = 100
+local ZOMBIE_SCAN_RADIUS = 60
 local TREE_SWITCH_WAIT = 0.3
 local RECOVERY_WAIT = 2
 local DOOR_PATTERN = "^DOOR%s*%d+%s+NEW$"
@@ -76,6 +78,7 @@ end
 
 local function isAlive()
     local humanoid = getHumanoid()
+
     return humanoid ~= nil
         and humanoid.Health > 0
         and getRoot() ~= nil
@@ -124,6 +127,7 @@ local function teleportTo(object)
     end
 
     local part = getPart(object)
+
     if not part then
         return false
     end
@@ -212,16 +216,18 @@ local function interact(object)
 end
 
 --==================================================
--- FIND TREES
+-- FIND HALLOWEEN TREES
 --==================================================
 
 local function getDoors()
     local folder = Workspace:FindFirstChild("HalloweenDoorTrees")
+
     if not folder then
         return nil
     end
 
     local template = folder:FindFirstChild("DoorTreeTemplate")
+
     if not template then
         return nil
     end
@@ -238,6 +244,7 @@ local function getDoors()
     table.sort(doors, function(a, b)
         local aNumber = tonumber(a.Name:match("%d+")) or 0
         local bNumber = tonumber(b.Name:match("%d+")) or 0
+
         return aNumber < bNumber
     end)
 
@@ -280,11 +287,16 @@ local function allTreesOpened()
 end
 
 --==================================================
--- ZOMBIE FARM
+-- NEARBY ZOMBIE DETECTION
 --==================================================
 
 local function getZombies()
     local zombies = {}
+    local root = getRoot()
+
+    if not root then
+        return zombies
+    end
 
     for _, object in ipairs(Workspace:GetDescendants()) do
         if object.Name == "HalloweenZombie"
@@ -293,35 +305,59 @@ local function getZombies()
             local humanoid =
                 object:FindFirstChildWhichIsA("Humanoid")
 
-            if humanoid and humanoid.Health > 0 then
-                table.insert(zombies, object)
+            local part = getPart(object)
+
+            if humanoid
+                and humanoid.Health > 0
+                and part then
+
+                local distance =
+                    (part.Position - root.Position).Magnitude
+
+                if distance <= ZOMBIE_SCAN_RADIUS then
+                    table.insert(zombies, {
+                        Model = object,
+                        Distance = distance
+                    })
+                end
             end
         end
     end
 
+    table.sort(zombies, function(a, b)
+        return a.Distance < b.Distance
+    end)
+
     return zombies
 end
+
+--==================================================
+-- ATTACK NEARBY ZOMBIES
+--==================================================
 
 local function attackZombies()
     if not waitForAlive() then
         return
     end
 
-    for _, zombie in ipairs(getZombies()) do
+    local zombies = getZombies()
+
+    for _, entry in ipairs(zombies) do
         if not Running or not waitForAlive() then
             return
         end
 
+        local zombie = entry.Model
+
+        if not zombie or not zombie.Parent then
+            continue
+        end
+
         pcall(function()
             local target = getPart(zombie)
-
-            if not target then
-                return
-            end
-
             local root = getRoot()
 
-            if not root then
+            if not target or not root then
                 return
             end
 
@@ -342,11 +378,13 @@ local function attackZombies()
                 local zombieHumanoid =
                     zombie:FindFirstChildWhichIsA("Humanoid")
 
-                if not zombieHumanoid or zombieHumanoid.Health <= 0 then
+                if not zombieHumanoid
+                    or zombieHumanoid.Health <= 0 then
                     break
                 end
 
                 local character = getCharacter()
+
                 local tool = character
                     and character:FindFirstChildWhichIsA("Tool")
 
@@ -398,7 +436,7 @@ local function getCandies()
 end
 
 --==================================================
--- COLLECT CANDY + ZOMBIES
+-- CANDY FARM + ZOMBIE FARM
 --==================================================
 
 local function collectCandy()
@@ -406,7 +444,7 @@ local function collectCandy()
         return
     end
 
-    -- Attack zombies as part of candy farming.
+    -- Detect and attack nearby zombies first.
     attackZombies()
 
     local candies = getCandies()
@@ -433,14 +471,14 @@ local function collectCandy()
                 end
             end
 
-            -- Keep attacking while collecting candy.
+            -- Detect nearby zombies again after collecting.
             attackZombies()
         end
     end
 end
 
 --==================================================
--- FARM TREE + ZOMBIES
+-- HALLOWEEN DOOR FARM + ZOMBIE FARM
 --==================================================
 
 local function farmDoor(door)
@@ -454,7 +492,7 @@ local function farmDoor(door)
         return
     end
 
-    -- Attack zombies before farming the door.
+    -- Attack nearby zombies before opening the door.
     attackZombies()
 
     if not teleportTo(door) then
@@ -475,7 +513,7 @@ local function farmDoor(door)
         return
     end
 
-    -- Continue both farms after opening the door.
+    -- Continue candy and zombie farming.
     collectCandy()
     attackZombies()
 end
@@ -495,6 +533,7 @@ local function queueAutoExecute()
 
     if type(queueFunction) ~= "function"
         and type(Env.syn) == "table" then
+
         queueFunction = Env.syn.queue_on_teleport
     end
 
@@ -615,7 +654,7 @@ task.spawn(function()
                 return
             end
 
-            -- Candy farm includes zombie attacks.
+            -- Candy farm with nearby zombie detection.
             collectCandy()
 
             if not Running then
@@ -629,7 +668,7 @@ task.spawn(function()
                 return
             end
 
-            -- Halloween door farm includes zombie attacks.
+            -- Door farm with nearby zombie detection.
             for _, door in ipairs(doors) do
                 if not Running or not waitForAlive() then
                     return
@@ -646,7 +685,7 @@ task.spawn(function()
                 return
             end
 
-            -- Only hop after all registered trees are opened.
+            -- Hop only after all registered doors are opened.
             if AutoHop then
                 local completed, total = allTreesOpened()
 
