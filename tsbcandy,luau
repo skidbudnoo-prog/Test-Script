@@ -3,8 +3,7 @@
     SAFE CANDY TELEPORT
     HALLOWEEN DOOR FARM
     NEARBY ZOMBIE DETECTION
-    AUTO RESET ON DAMAGE
-    AUTOMATIC RESPAWN RECOVERY
+    STARTUP RESET + DEATH RECOVERY
     SERVER HOP + AUTO EXECUTE
 ]]
 
@@ -54,17 +53,20 @@ local DOOR_PATTERN = "^DOOR%s*%d+%s+NEW$"
 local LOADER_URL =
     "https://raw.githubusercontent.com/skidbudnoo-prog/Test-Script/refs/heads/main/tsbcandy%2Cluau"
 
+local FIXLAG_URL =
+    "https://raw.githubusercontent.com/SkibidiFart123patapim/OpenSource/refs/heads/main/FixLag.luau"
+
+local NORENDER_URL =
+    "https://raw.githubusercontent.com/SkibidiFart123patapim/OpenSource/refs/heads/main/NoRender.luau"
+
 --==================================================
 -- RUNTIME
 --==================================================
 
 local Running = true
-local ResetInProgress = false
-
 local DoorRegistry = {}
 local CountedCandy = {}
 local CandyCooldown = {}
-local CharacterConnections = {}
 
 --==================================================
 -- CANDY NAMES
@@ -131,101 +133,7 @@ local function waitForAlive()
 end
 
 --==================================================
--- AUTO RESET WHEN TAKING DAMAGE
---==================================================
-
-local function forceReset(humanoid)
-    if ResetInProgress or not humanoid then
-        return
-    end
-
-    if humanoid.Health <= 0 then
-        return
-    end
-
-    ResetInProgress = true
-
-    warn("[AXOMJB] Damage detected! Resetting character...")
-
-    pcall(function()
-        humanoid.Health = 0
-    end)
-end
-
-local function disconnectCharacterConnections()
-    for _, connection in ipairs(CharacterConnections) do
-        pcall(function()
-            connection:Disconnect()
-        end)
-    end
-
-    table.clear(CharacterConnections)
-end
-
-local function monitorCharacter(character)
-    disconnectCharacterConnections()
-
-    if not character then
-        return
-    end
-
-    local humanoid = character:WaitForChild("Humanoid", 15)
-
-    if not humanoid then
-        warn("[AXOMJB] Could not find respawned Humanoid.")
-        return
-    end
-
-    if Player.Character ~= character then
-        return
-    end
-
-    local previousHealth = humanoid.Health
-
-    table.insert(
-        CharacterConnections,
-        humanoid.HealthChanged:Connect(function(newHealth)
-            if Player.Character ~= character then
-                return
-            end
-
-            if newHealth < previousHealth and newHealth > 0 then
-                forceReset(humanoid)
-            end
-
-            previousHealth = newHealth
-        end)
-    )
-
-    table.insert(
-        CharacterConnections,
-        humanoid.Died:Connect(function()
-            ResetInProgress = true
-            warn("[AXOMJB] Character died. Waiting for respawn...")
-        end)
-    )
-
-    warn("[AXOMJB] Character damage monitoring active.")
-end
-
-Player.CharacterAdded:Connect(function(character)
-    ResetInProgress = false
-
-    warn("[AXOMJB] Character respawned. Preparing to resume farming...")
-
-    task.spawn(function()
-        monitorCharacter(character)
-    end)
-end)
-
-if Player.Character then
-    task.spawn(function()
-        monitorCharacter(Player.Character)
-    end)
-end
-
---==================================================
--- AUTOMATIC RESET ON START
+-- AUTOMATIC RESET ON START ONLY
 --==================================================
 
 local function resetOnStart()
@@ -239,8 +147,6 @@ local function resetOnStart()
     if not oldCharacter or not humanoid then
         return false
     end
-
-    ResetInProgress = true
 
     warn("[AXOMJB] Performing startup reset...")
 
@@ -256,13 +162,11 @@ local function resetOnStart()
         return false
     end
 
-    ResetInProgress = false
-
     if not waitForAlive() then
         return false
     end
 
-    warn("[AXOMJB] Startup reset complete. Farming enabled.")
+    warn("[AXOMJB] Respawn complete. Farming enabled.")
 
     return true
 end
@@ -971,8 +875,40 @@ local function serverHop()
 end
 
 --==================================================
+-- OPTIMIZATION SCRIPTS
+--==================================================
+
+local function loadOptimization(url)
+    if type(loadstring) ~= "function" then
+        return
+    end
+
+    pcall(function()
+        local source = game:HttpGet(url)
+
+        if type(source) ~= "string" or source == "" then
+            return
+        end
+
+        local compiled = loadstring(source)
+
+        if compiled then
+            compiled()
+        end
+    end)
+end
+
+--==================================================
 -- STARTUP OPTIMIZATIONS
 --==================================================
+
+task.spawn(function()
+    task.wait(2)
+    loadOptimization(FIXLAG_URL)
+
+    task.wait(1)
+    loadOptimization(NORENDER_URL)
+end)
 
 --==================================================
 -- RESET BEFORE STARTING FARM
@@ -1001,7 +937,7 @@ while Running do
             return
         end
 
-        -- Find and farm doors.
+        -- Always continue searching for doors.
         local doors = getDoors()
 
         for _, door in ipairs(doors) do
@@ -1023,13 +959,13 @@ while Running do
             return
         end
 
-        -- Collect another candy after door farming.
+        -- Search for another candy after door farming.
         collectCandy()
 
         -- Attack nearby zombies.
         attackZombies()
 
-        -- Server hop after doors are opened.
+        -- Hop only after all tracked doors are opened.
         if ServerHop then
             local completed, total = allTreesOpened()
 
