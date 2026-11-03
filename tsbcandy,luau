@@ -3,10 +3,9 @@
     AXOMJB - HALLOWEEN AUTOFARM 🎃
     SAFE CANDY TELEPORT
     DYNAMIC HALLOWEEN TREE DETECTION
-    TELEPORT TO NEWLY SPAWNED DOORS
-    BACKGROUND ZOMBIE DETECTION ONLY
+    NEARBY ZOMBIE DETECTION + COMBAT
+    COLLECT CANDY AFTER ZOMBIE FIGHT
     NO FORCED RESET
-    DEATH RECOVERY
     SERVER HOP + AUTO EXECUTE
 ]]
 
@@ -44,16 +43,17 @@ local CANDY_SCAN_RADIUS = 100
 local ZOMBIE_SCAN_RADIUS = 60
 local ZOMBIE_SCAN_INTERVAL = 0.5
 
+local ZOMBIE_ATTACKS = 5
+local ZOMBIE_ATTACK_DELAY = 0.35
+local ZOMBIE_ATTACK_COOLDOWN = 3
+
 local CANDY_TELEPORT_DELAY = 1.5
 local CANDY_RETRY_COOLDOWN = 5
 local CANDY_GROUND_CHECK_DISTANCE = 80
 local CANDY_MAX_GROUND_DROP = 22
 local CANDY_MAX_VERTICAL_DIFFERENCE = 15
 
-local TREE_SWITCH_WAIT = 0.5
 local SCAN_WAIT = 1
-
--- Wait this long without discovering a new door before hopping.
 local DOOR_DISCOVERY_IDLE = 20
 local DOOR_RETRY_COOLDOWN = 5
 
@@ -74,25 +74,14 @@ local NORENDER_URL =
 
 local Running = true
 
-local DoorRegistry = setmetatable({}, {
-    __mode = "k"
-})
-
-local DoorCooldown = setmetatable({}, {
-    __mode = "k"
-})
-
-local CountedCandy = setmetatable({}, {
-    __mode = "k"
-})
-
-local CandyCooldown = setmetatable({}, {
-    __mode = "k"
-})
+local DoorRegistry = setmetatable({}, {__mode = "k"})
+local DoorCooldown = setmetatable({}, {__mode = "k"})
+local CountedCandy = setmetatable({}, {__mode = "k"})
+local CandyCooldown = setmetatable({}, {__mode = "k"})
+local ZombieAttackCooldown = setmetatable({}, {__mode = "k"})
 
 local NearbyZombies = {}
 local PreviousZombieCount = -1
-
 local LastDoorDiscovery = os.clock()
 
 --==================================================
@@ -127,16 +116,12 @@ end
 
 local function getHumanoid()
     local character = getCharacter()
-
-    return character
-        and character:FindFirstChildWhichIsA("Humanoid")
+    return character and character:FindFirstChildWhichIsA("Humanoid")
 end
 
 local function getRoot()
     local character = getCharacter()
-
-    return character
-        and character:FindFirstChild("HumanoidRootPart")
+    return character and character:FindFirstChild("HumanoidRootPart")
 end
 
 local function isAlive()
@@ -181,7 +166,7 @@ local function getPart(object)
 end
 
 --==================================================
--- BACKGROUND ZOMBIE DETECTION ONLY
+-- ZOMBIE DETECTION
 --==================================================
 
 local function isZombieModel(object)
@@ -215,16 +200,14 @@ local function scanNearbyZombies()
                 object:FindFirstChild("HumanoidRootPart")
                 or getPart(object)
 
-            if humanoid
-                and humanoid.Health > 0
-                and part then
-
+            if humanoid and humanoid.Health > 0 and part then
                 local distance =
                     (part.Position - root.Position).Magnitude
 
                 if distance <= ZOMBIE_SCAN_RADIUS then
                     table.insert(found, {
                         Model = object,
+                        Humanoid = humanoid,
                         Distance = distance
                     })
                 end
@@ -238,17 +221,146 @@ local function scanNearbyZombies()
         PreviousZombieCount = #found
 
         if #found > 0 then
-            print(
-                "[AXOMJB] Nearby zombies detected:",
-                #found
-            )
+            print("[AXOMJB] Nearby zombies detected:", #found)
         else
             print("[AXOMJB] No nearby zombies.")
         end
     end
 end
 
--- Independent scanner. It never attacks or interrupts farming.
+--==================================================
+-- ZOMBIE COMBAT
+-- Uses currently equipped Tool.
+-- Does not teleport to zombies.
+--==================================================
+
+local function getEquippedWeapon()
+    local character = getCharacter()
+
+    if not character then
+        return nil
+    end
+
+    for _, object in ipairs(character:GetChildren()) do
+        if object:IsA("Tool") then
+            return object
+        end
+    end
+
+    return nil
+end
+
+local function getClosestZombie()
+    local root = getRoot()
+
+    if not root then
+        return nil
+    end
+
+    local closest = nil
+    local closestDistance = ZOMBIE_SCAN_RADIUS
+
+    for _, entry in ipairs(NearbyZombies) do
+        local zombie = entry.Model
+        local humanoid = entry.Humanoid
+        local part = zombie and (
+            zombie:FindFirstChild("HumanoidRootPart")
+            or getPart(zombie)
+        )
+
+        if zombie
+            and zombie:IsDescendantOf(Workspace)
+            and humanoid
+            and humanoid.Health > 0
+            and part then
+
+            local distance =
+                (part.Position - root.Position).Magnitude
+
+            if distance <= closestDistance then
+                closestDistance = distance
+
+                closest = {
+                    Model = zombie,
+                    Humanoid = humanoid,
+                    Distance = distance
+                }
+            end
+        end
+    end
+
+    return closest
+end
+
+local function fightNearbyZombie()
+    if not waitForAlive() then
+        return false
+    end
+
+    -- Refresh detection before fighting.
+    pcall(scanNearbyZombies)
+
+    local target = getClosestZombie()
+
+    if not target then
+        return false
+    end
+
+    local zombie = target.Model
+
+    local cooldownUntil = ZombieAttackCooldown[zombie]
+
+    if cooldownUntil and os.clock() < cooldownUntil then
+        return false
+    end
+
+    local weapon = getEquippedWeapon()
+
+    if not weapon then
+        warn("[AXOMJB] Zombie nearby, but no weapon is equipped.")
+        return false
+    end
+
+    print("[AXOMJB] Fighting nearby zombie:", zombie.Name)
+
+    ZombieAttackCooldown[zombie] =
+        os.clock() + ZOMBIE_ATTACK_COOLDOWN
+
+    for i = 1, ZOMBIE_ATTACKS do
+        if not Running or not isAlive() then
+            break
+        end
+
+        if not zombie:IsDescendantOf(Workspace) then
+            break
+        end
+
+        if not target.Humanoid
+            or target.Humanoid.Health <= 0 then
+            break
+        end
+
+        -- Stop if the weapon is no longer equipped.
+        if weapon.Parent ~= getCharacter() then
+            break
+        end
+
+        pcall(function()
+            weapon:Activate()
+        end)
+
+        task.wait(ZOMBIE_ATTACK_DELAY)
+    end
+
+    print("[AXOMJB] Zombie fight finished. Checking nearby candy.")
+
+    -- Refresh zombie list after the fight.
+    pcall(scanNearbyZombies)
+
+    return true
+end
+
+-- Independent scanner. It does not attack or interrupt farming.
 task.spawn(function()
     while Running do
         pcall(scanNearbyZombies)
@@ -257,7 +369,7 @@ task.spawn(function()
 end)
 
 --==================================================
--- DOOR TELEPORT
+-- TELEPORT HELPERS
 --==================================================
 
 local function teleportTo(object)
@@ -284,10 +396,6 @@ local function teleportTo(object)
     return success
 end
 
---==================================================
--- FACE TREE
---==================================================
-
 local function faceTree(door)
     if not waitForAlive() then
         return false
@@ -309,15 +417,6 @@ local function faceTree(door)
                 part.Position.Z
             )
         )
-
-        local camera = Workspace.CurrentCamera
-
-        if camera then
-            camera.CFrame = CFrame.lookAt(
-                camera.CFrame.Position,
-                part.Position
-            )
-        end
     end)
 end
 
@@ -355,7 +454,7 @@ local function interact(object)
 end
 
 --==================================================
--- CHECK OPENED DOORS
+-- DOOR STATUS
 --==================================================
 
 local function isDoorOpened(door)
@@ -377,8 +476,6 @@ end
 
 --==================================================
 -- DYNAMIC HALLOWEEN DOOR SCANNER
--- Scans the entire HalloweenDoorTrees folder.
--- Does not rely on DoorTreeTemplate.
 --==================================================
 
 local function getDoors()
@@ -397,7 +494,6 @@ local function getDoors()
         if object.Name:match(DOOR_PATTERN)
             and getPart(object) then
 
-            -- Register newly spawned doors.
             if not DoorRegistry[object] then
                 DoorRegistry[object] = true
                 LastDoorDiscovery = os.clock()
@@ -431,17 +527,12 @@ local function getDoors()
         end
     end
 
-    -- Visit the closest unopened door first.
     table.sort(doors, function(a, b)
         return a.Distance < b.Distance
     end)
 
     return doors
 end
-
---==================================================
--- CHECK ALL DISCOVERED DOORS
---==================================================
 
 local function allTreesOpened()
     local total = 0
@@ -458,7 +549,7 @@ local function allTreesOpened()
 end
 
 --==================================================
--- FIND THE CLOSEST CANDY PART
+-- CANDY HELPERS
 --==================================================
 
 local function getCandyPart(object, root)
@@ -490,10 +581,6 @@ local function getCandyPart(object, root)
     return bestPart
 end
 
---==================================================
--- FIND SAFE GROUND UNDER CANDY
---==================================================
-
 local function getSafeCandyPosition(candy, part)
     if not candy or not part then
         return nil
@@ -508,15 +595,10 @@ local function getSafeCandyPosition(candy, part)
     params.RespectCanCollide = true
 
     local origin = part.Position + Vector3.new(0, 8, 0)
-    local direction = Vector3.new(
-        0,
-        -CANDY_GROUND_CHECK_DISTANCE,
-        0
-    )
 
     local result = Workspace:Raycast(
         origin,
-        direction,
+        Vector3.new(0, -CANDY_GROUND_CHECK_DISTANCE, 0),
         params
     )
 
@@ -555,12 +637,9 @@ local function getSafeCandyPosition(candy, part)
     local standingHeight =
         humanoid.HipHeight + (root.Size.Y / 2) + 0.5
 
-    return result.Position + Vector3.new(0, standingHeight, 0)
+    return result.Position
+        + Vector3.new(0, standingHeight, 0)
 end
-
---==================================================
--- FIND CLOSEST SAFE CANDY
---==================================================
 
 local function getCandies()
     local candies = {}
@@ -619,7 +698,7 @@ local function getCandies()
 end
 
 --==================================================
--- SAFE, SLOW CANDY TELEPORT
+-- COLLECT CANDY
 --==================================================
 
 local function collectCandy()
@@ -627,6 +706,7 @@ local function collectCandy()
         return
     end
 
+    -- Always make a fresh scan when this function is called.
     local candies = getCandies()
 
     for _, entry in ipairs(candies) do
@@ -657,7 +737,6 @@ local function collectCandy()
         if not safePosition then
             CandyCooldown[candy] =
                 os.clock() + CANDY_RETRY_COOLDOWN
-
             continue
         end
 
@@ -684,6 +763,7 @@ local function collectCandy()
                 os.clock() + CANDY_RETRY_COOLDOWN
         end
 
+        -- One candy per call, then scan again next loop.
         return
     end
 end
@@ -703,9 +783,7 @@ local function farmDoor(door)
         return
     end
 
-    local success = teleportTo(door)
-
-    if not success then
+    if not teleportTo(door) then
         DoorCooldown[door] =
             os.clock() + DOOR_RETRY_COOLDOWN
         return
@@ -721,10 +799,6 @@ local function farmDoor(door)
     interact(door)
     task.wait(OPEN_WAIT)
 
-    if not Running then
-        return
-    end
-
     if isDoorOpened(door) then
         DoorCooldown[door] = nil
         print("[AXOMJB] Door opened:", door.Name)
@@ -732,17 +806,15 @@ local function farmDoor(door)
         DoorCooldown[door] =
             os.clock() + DOOR_RETRY_COOLDOWN
 
-        warn(
-            "[AXOMJB] Door did not open; will retry:",
-            door.Name
-        )
+        warn("[AXOMJB] Door did not open; will retry:", door.Name)
     end
 
+    -- Check candy after interacting with a tree too.
     collectCandy()
 end
 
 --==================================================
--- AUTO EXECUTE ON SERVER HOP
+-- AUTO EXECUTE
 --==================================================
 
 local function queueAutoExecute()
@@ -756,7 +828,6 @@ local function queueAutoExecute()
 
     if type(queueFunction) ~= "function"
         and type(Env.syn) == "table" then
-
         queueFunction = Env.syn.queue_on_teleport
     end
 
@@ -767,11 +838,9 @@ local function queueAutoExecute()
     local loaderCode =
         'loadstring(game:HttpGet("' .. LOADER_URL .. '"))()'
 
-    local success = pcall(function()
+    return pcall(function()
         queueFunction(loaderCode)
     end)
-
-    return success
 end
 
 --==================================================
@@ -850,7 +919,7 @@ local function serverHop()
 end
 
 --==================================================
--- OPTIMIZATION SCRIPTS
+-- OPTIMIZATIONS
 --==================================================
 
 local function loadOptimization(url)
@@ -868,10 +937,6 @@ local function loadOptimization(url)
     end)
 end
 
---==================================================
--- STARTUP OPTIMIZATIONS
---==================================================
-
 task.spawn(function()
     task.wait(2)
     loadOptimization(FIXLAG_URL)
@@ -882,8 +947,6 @@ end)
 
 --==================================================
 -- MAIN FARM LOOP
--- NO FORCED RESET
--- DYNAMIC DOOR DISCOVERY
 --==================================================
 
 while Running do
@@ -892,28 +955,14 @@ while Running do
             return
         end
 
-        -- Collect candy first.
-        collectCandy()
+        -- 1. Detect and fight a nearby zombie.
+        local foughtZombie = fightNearbyZombie()
 
-        if not Running then
-            return
-        end
-
-        -- Scan the entire HalloweenDoorTrees folder again.
-        -- This finds newly spawned doors too.
-        local doors = getDoors()
-
-        if #doors > 0 then
-            -- Only handle one door per loop.
-            -- The next loop scans again for newly spawned doors.
-            local nextDoor = doors[1]
-
-            if nextDoor and nextDoor.Object then
-                farmDoor(nextDoor.Object)
-            end
+        -- 2. Immediately scan for candy after fighting.
+        if foughtZombie then
+            collectCandy()
         else
-            -- No currently available unopened doors.
-            -- Continue candy collection while waiting for new trees.
+            -- Continue regular candy collection.
             collectCandy()
         end
 
@@ -921,10 +970,29 @@ while Running do
             return
         end
 
-        -- Scan again after farming in case a tree spawned meanwhile.
+        -- 3. Find current and newly spawned Halloween doors.
+        local doors = getDoors()
+
+        if #doors > 0 then
+            farmDoor(doors[1].Object)
+        end
+
+        if not Running then
+            return
+        end
+
+        -- 4. Check zombies again after door farming.
+        local foughtAnotherZombie = fightNearbyZombie()
+
+        -- 5. Check nearby candy again after the fight.
+        if foughtAnotherZombie then
+            collectCandy()
+        end
+
+        -- 6. Re-scan for new doors.
         getDoors()
 
-        -- Server hop only when every discovered door is open
+        -- 7. Server hop only after all discovered doors are open
         -- and no new door has appeared for the idle period.
         if ServerHop then
             local completed, total = allTreesOpened()
@@ -936,9 +1004,7 @@ while Running do
                 and total > 0
                 and quietTime >= DOOR_DISCOVERY_IDLE then
 
-                print(
-                    "[AXOMJB] All discovered doors opened. Server hopping..."
-                )
+                print("[AXOMJB] All discovered doors opened. Server hopping...")
 
                 if serverHop() then
                     Running = false
@@ -949,10 +1015,7 @@ while Running do
     end)
 
     if not success then
-        warn(
-            "[AXOMJB] Farm recovered from error:",
-            tostring(err)
-        )
+        warn("[AXOMJB] Farm recovered from error:", tostring(err))
     end
 
     task.wait(SCAN_WAIT)
