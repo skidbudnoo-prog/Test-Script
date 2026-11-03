@@ -1,9 +1,11 @@
+
 --[[
     AXOMJB - HALLOWEEN AUTOFARM 🎃
     SAFE CANDY TELEPORT
     HALLOWEEN DOOR FARM
-    NEARBY ZOMBIE DETECTION
-    STARTUP RESET + DEATH RECOVERY
+    BACKGROUND ZOMBIE DETECTION ONLY
+    NO FORCED RESET
+    DEATH RECOVERY
     SERVER HOP + AUTO EXECUTE
 ]]
 
@@ -38,6 +40,7 @@ local Player = Players.LocalPlayer
 local OPEN_WAIT = 3
 local CANDY_SCAN_RADIUS = 100
 local ZOMBIE_SCAN_RADIUS = 60
+local ZOMBIE_SCAN_INTERVAL = 0.5
 
 local CANDY_TELEPORT_DELAY = 1.5
 local CANDY_RETRY_COOLDOWN = 5
@@ -67,6 +70,9 @@ local Running = true
 local DoorRegistry = {}
 local CountedCandy = {}
 local CandyCooldown = {}
+
+local NearbyZombies = {}
+local PreviousZombieCount = -1
 
 --==================================================
 -- CANDY NAMES
@@ -133,45 +139,6 @@ local function waitForAlive()
 end
 
 --==================================================
--- AUTOMATIC RESET ON START ONLY
---==================================================
-
-local function resetOnStart()
-    if not waitForAlive() then
-        return false
-    end
-
-    local oldCharacter = getCharacter()
-    local humanoid = getHumanoid()
-
-    if not oldCharacter or not humanoid then
-        return false
-    end
-
-    warn("[AXOMJB] Performing startup reset...")
-
-    pcall(function()
-        humanoid.Health = 0
-    end)
-
-    while Running and Player.Character == oldCharacter do
-        task.wait(0.25)
-    end
-
-    if not Running then
-        return false
-    end
-
-    if not waitForAlive() then
-        return false
-    end
-
-    warn("[AXOMJB] Respawn complete. Farming enabled.")
-
-    return true
-end
-
---==================================================
 -- OBJECT HELPERS
 --==================================================
 
@@ -193,6 +160,83 @@ local function getPart(object)
 end
 
 --==================================================
+-- BACKGROUND ZOMBIE DETECTION ONLY
+--==================================================
+
+local function isZombieModel(object)
+    if not object or not object:IsA("Model") then
+        return false
+    end
+
+    return string.find(
+        string.lower(object.Name),
+        "zombie",
+        1,
+        true
+    ) ~= nil
+end
+
+local function scanNearbyZombies()
+    local found = {}
+    local root = getRoot()
+
+    if not root then
+        NearbyZombies = found
+        return
+    end
+
+    for _, object in ipairs(Workspace:GetDescendants()) do
+        if isZombieModel(object) then
+            local humanoid =
+                object:FindFirstChildWhichIsA("Humanoid")
+
+            local part =
+                object:FindFirstChild("HumanoidRootPart")
+                or getPart(object)
+
+            if humanoid
+                and humanoid.Health > 0
+                and part then
+
+                local distance =
+                    (part.Position - root.Position).Magnitude
+
+                if distance <= ZOMBIE_SCAN_RADIUS then
+                    table.insert(found, {
+                        Model = object,
+                        Distance = distance
+                    })
+                end
+            end
+        end
+    end
+
+    NearbyZombies = found
+
+    -- Only print when the nearby zombie count changes.
+    if #found ~= PreviousZombieCount then
+        PreviousZombieCount = #found
+
+        if #found > 0 then
+            print(
+                "[AXOMJB] Nearby zombies detected:",
+                #found
+            )
+        else
+            print("[AXOMJB] No nearby zombies.")
+        end
+    end
+end
+
+-- Run independently so zombie detection never interrupts farming.
+task.spawn(function()
+    while Running do
+        pcall(scanNearbyZombies)
+        task.wait(ZOMBIE_SCAN_INTERVAL)
+    end
+end)
+
+--==================================================
 -- DOOR TELEPORT
 --==================================================
 
@@ -208,13 +252,7 @@ local function teleportTo(object)
     end
 
     local success = pcall(function()
-        local character = getCharacter()
-
-        if not character then
-            error("Character missing")
-        end
-
-        character:PivotTo(
+        getCharacter():PivotTo(
             CFrame.new(part.Position + Vector3.new(0, 3, 0))
         )
     end)
@@ -268,10 +306,6 @@ end
 --==================================================
 
 local function interact(object)
-    if not object or not object.Parent then
-        return false
-    end
-
     local prompt = object:FindFirstChildWhichIsA(
         "ProximityPrompt",
         true
@@ -367,135 +401,14 @@ local function allTreesOpened()
     local total = 0
 
     for door in pairs(DoorRegistry) do
-        if door and door.Parent then
-            total = total + 1
+        total = total + 1
 
-            if not isDoorOpened(door) then
-                return false, total
-            end
+        if not isDoorOpened(door) then
+            return false, total
         end
     end
 
     return total > 0, total
-end
-
---==================================================
--- NEARBY ZOMBIE DETECTION
---==================================================
-
-local function getZombies()
-    local zombies = {}
-    local root = getRoot()
-
-    if not root then
-        return zombies
-    end
-
-    for _, object in ipairs(Workspace:GetDescendants()) do
-        if object.Name == "HalloweenZombie"
-            and object:IsA("Model") then
-
-            local humanoid =
-                object:FindFirstChildWhichIsA("Humanoid")
-
-            local part = getPart(object)
-
-            if humanoid
-                and humanoid.Health > 0
-                and part then
-
-                local distance =
-                    (part.Position - root.Position).Magnitude
-
-                if distance <= ZOMBIE_SCAN_RADIUS then
-                    table.insert(zombies, {
-                        Model = object,
-                        Distance = distance
-                    })
-                end
-            end
-        end
-    end
-
-    table.sort(zombies, function(a, b)
-        return a.Distance < b.Distance
-    end)
-
-    return zombies
-end
-
---==================================================
--- ATTACK NEARBY ZOMBIES
---==================================================
-
-local function attackZombies()
-    if not waitForAlive() then
-        return
-    end
-
-    local zombies = getZombies()
-
-    for _, entry in ipairs(zombies) do
-        if not Running or not waitForAlive() then
-            return
-        end
-
-        local zombie = entry.Model
-
-        if zombie and zombie.Parent then
-            pcall(function()
-                local target = getPart(zombie)
-                local root = getRoot()
-
-                if not target or not root then
-                    return
-                end
-
-                local distance =
-                    (target.Position - root.Position).Magnitude
-
-                if distance > ZOMBIE_SCAN_RADIUS then
-                    return
-                end
-
-                root.CFrame = CFrame.lookAt(
-                    root.Position,
-                    target.Position
-                )
-
-                for _ = 1, 5 do
-                    if not Running or not zombie.Parent then
-                        break
-                    end
-
-                    if not waitForAlive() then
-                        break
-                    end
-
-                    local zombieHumanoid =
-                        zombie:FindFirstChildWhichIsA("Humanoid")
-
-                    if not zombieHumanoid
-                        or zombieHumanoid.Health <= 0 then
-                        break
-                    end
-
-                    local character = getCharacter()
-
-                    local tool = character
-                        and character:FindFirstChildWhichIsA("Tool")
-
-                    if tool then
-                        pcall(function()
-                            tool:Activate()
-                        end)
-                    end
-
-                    task.wait(0.35)
-                end
-            end)
-        end
-    end
 end
 
 --==================================================
@@ -549,7 +462,6 @@ local function getSafeCandyPosition(candy, part)
     params.RespectCanCollide = true
 
     local origin = part.Position + Vector3.new(0, 8, 0)
-
     local direction = Vector3.new(
         0,
         -CANDY_GROUND_CHECK_DISTANCE,
@@ -885,11 +797,6 @@ local function loadOptimization(url)
 
     pcall(function()
         local source = game:HttpGet(url)
-
-        if type(source) ~= "string" or source == "" then
-            return
-        end
-
         local compiled = loadstring(source)
 
         if compiled then
@@ -911,18 +818,10 @@ task.spawn(function()
 end)
 
 --==================================================
--- RESET BEFORE STARTING FARM
---==================================================
-
-if not resetOnStart() then
-    return
-end
-
---==================================================
 -- MAIN FARM LOOP
+-- NO FORCED RESET
+-- ZOMBIE SCANNER RUNS IN BACKGROUND
 --==================================================
-
-warn("[AXOMJB] Halloween Autofarm started!")
 
 while Running do
     local success, err = pcall(function()
@@ -937,7 +836,7 @@ while Running do
             return
         end
 
-        -- Always continue searching for doors.
+        -- Continue searching for doors.
         local doors = getDoors()
 
         for _, door in ipairs(doors) do
@@ -962,10 +861,7 @@ while Running do
         -- Search for another candy after door farming.
         collectCandy()
 
-        -- Attack nearby zombies.
-        attackZombies()
-
-        -- Hop only after all tracked doors are opened.
+        -- Server hop only after all tracked doors are opened.
         if ServerHop then
             local completed, total = allTreesOpened()
 
