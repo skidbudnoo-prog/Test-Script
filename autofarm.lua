@@ -1,21 +1,23 @@
 
---// MULTI-ACCOUNT FARMING SYSTEM
---// Main + Alt Account Controller
+--==================================================
+-- MULTI-ACCOUNT FARMING SYSTEM
+-- Main + Alt Account Controller
+--==================================================
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
-
 if not LocalPlayer then
+    warn("[Farm] LocalPlayer unavailable")
     return
 end
 
---==================================================
--- GETGENV CONFIGURATION
---==================================================
-
 local SharedEnv = (typeof(getgenv) == "function" and getgenv()) or _G
+
+--==================================================
+-- CONFIGURATION
+--==================================================
 
 local function CleanUsername(value)
     if typeof(value) ~= "string" then
@@ -31,29 +33,25 @@ local function CleanUsername(value)
     return value
 end
 
-local MainAccountName = CleanUsername(SharedEnv.MainAccount) or ""
-local AltAccountNames = {}
+local MainAccount = CleanUsername(SharedEnv.MainAccount) or ""
+
+local AltAccounts = {}
+local SeenAccounts = {}
 
 if typeof(SharedEnv.AltAccounts) == "table" then
-    local Added = {}
-
     for _, username in pairs(SharedEnv.AltAccounts) do
         local cleaned = CleanUsername(username)
 
-        if cleaned and not Added[cleaned:lower()] then
-            Added[cleaned:lower()] = true
-            table.insert(AltAccountNames, cleaned)
+        if cleaned and not SeenAccounts[cleaned:lower()] then
+            SeenAccounts[cleaned:lower()] = true
+            table.insert(AltAccounts, cleaned)
         end
     end
 end
 
---==================================================
--- CONFIGURATION
---==================================================
-
 local Config = {
-    MainAccount = MainAccountName,
-    AltAccounts = AltAccountNames,
+    MainAccount = MainAccount,
+    AltAccounts = AltAccounts,
 
     MainPosition = Vector3.new(364, 440, 433),
     AltPosition = Vector3.new(361, 440, 428),
@@ -64,44 +62,14 @@ local Config = {
     DisableAltCollisions = true,
 
     AutoEmoteAndSwitch = true,
-
-    AutoScriptURL =
-        "https://raw.githubusercontent.com/REES-oss/Loaders/refs/heads/main/auto.luau",
+    AutoScriptURL = "https://raw.githubusercontent.com/REES-oss/Loaders/refs/heads/main/auto.luau",
 
     KillCounter = true,
+    PositionCheckInterval = 0.5,
 }
 
 --==================================================
 -- ACCOUNT IDENTIFICATION
---==================================================
-
-local IsMain = MainAccountName ~= ""
-    and LocalPlayer.Name:lower() == MainAccountName:lower()
-
-local IsAlt = false
-
-for _, username in ipairs(Config.AltAccounts) do
-    if LocalPlayer.Name:lower() == username:lower() then
-        IsAlt = true
-        break
-    end
-end
-
-if not IsMain and not IsAlt then
-    warn("[Farm] Account is not configured:", LocalPlayer.Name)
-    return
-end
-
-print("[Farm] Account:", LocalPlayer.Name)
-print("[Farm] Role:", IsMain and "MAIN" or "ALT")
-print("[Farm] Configured alts:", #Config.AltAccounts)
-
-local AssignedPosition = IsMain
-    and Config.MainPosition
-    or Config.AltPosition
-
---==================================================
--- PLAYER LOOKUP
 --==================================================
 
 local function FindPlayer(username)
@@ -117,6 +85,34 @@ local function FindPlayer(username)
 
     return nil
 end
+
+local IsMain = MainAccount ~= ""
+    and LocalPlayer.Name:lower() == MainAccount:lower()
+
+local IsAlt = false
+
+for _, username in ipairs(AltAccounts) do
+    if LocalPlayer.Name:lower() == username:lower() then
+        IsAlt = true
+        break
+    end
+end
+
+if not IsMain and not IsAlt then
+    warn("[Farm] Account not configured:", LocalPlayer.Name)
+    return
+end
+
+if IsMain and #AltAccounts == 0 then
+    warn("[Farm] No alt accounts configured")
+end
+
+print("[Farm] Account:", LocalPlayer.Name)
+print("[Farm] Role:", IsMain and "MAIN" or "ALT")
+
+local AssignedPosition = IsMain
+    and Config.MainPosition
+    or Config.AltPosition
 
 --==================================================
 -- CHARACTER STATE
@@ -139,11 +135,7 @@ local function GetCharacterComponents()
     local humanoid = char:FindFirstChildOfClass("Humanoid")
     local root = char:FindFirstChild("HumanoidRootPart")
 
-    if not humanoid or not root then
-        return nil
-    end
-
-    if humanoid.Health <= 0 then
+    if not humanoid or not root or humanoid.Health <= 0 then
         return nil
     end
 
@@ -154,15 +146,13 @@ local function WaitForCharacterReady(generation)
     while generation == CharacterGeneration do
         local char, humanoid, root = GetCharacterComponents()
 
-        if char and humanoid and root then
-            if char == LocalPlayer.Character then
-                Character = char
-                Humanoid = humanoid
-                RootPart = root
-                CharacterReady = true
+        if char and humanoid and root and char == LocalPlayer.Character then
+            Character = char
+            Humanoid = humanoid
+            RootPart = root
+            CharacterReady = true
 
-                return true
-            end
+            return true
         end
 
         RunService.Heartbeat:Wait()
@@ -197,9 +187,7 @@ local function DisableCollisions(char)
         ApplyCollision(descendant)
     end
 
-    CollisionConnection = char.DescendantAdded:Connect(
-        ApplyCollision
-    )
+    CollisionConnection = char.DescendantAdded:Connect(ApplyCollision)
 end
 
 --==================================================
@@ -212,10 +200,14 @@ local function HandleCharacterSpawn(char)
     local generation = CharacterGeneration
 
     CharacterReady = false
-
     Character = char
     Humanoid = nil
     RootPart = nil
+
+    if CollisionConnection then
+        CollisionConnection:Disconnect()
+        CollisionConnection = nil
+    end
 
     task.spawn(function()
         if not WaitForCharacterReady(generation) then
@@ -241,9 +233,8 @@ end
 LocalPlayer.CharacterAdded:Connect(HandleCharacterSpawn)
 
 LocalPlayer.CharacterRemoving:Connect(function()
-    CharacterReady = false
-
     CharacterGeneration += 1
+    CharacterReady = false
 
     Character = nil
     Humanoid = nil
@@ -260,78 +251,54 @@ if LocalPlayer.Character then
 end
 
 --==================================================
--- KILL COUNTER UI
+-- KILL COUNTER
 --==================================================
 
-local StartingKills = 0
-local CurrentKills = 0
-
-local ScreenGui
-local KillLabel
-
 if Config.KillCounter then
-    local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
-
-    ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = "FarmKillCounter"
-    ScreenGui.ResetOnSpawn = false
-    ScreenGui.Parent = PlayerGui
-
-    KillLabel = Instance.new("TextLabel")
-    KillLabel.Name = "KillCounter"
-
-    KillLabel.AnchorPoint = Vector2.new(1, 0)
-    KillLabel.Position = UDim2.new(1, -20, 0, 20)
-    KillLabel.Size = UDim2.new(0, 220, 0, 35)
-
-    KillLabel.BackgroundTransparency = 1
-    KillLabel.BorderSizePixel = 0
-
-    KillLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    KillLabel.TextSize = 18
-    KillLabel.Font = Enum.Font.GothamBold
-
-    KillLabel.TextXAlignment = Enum.TextXAlignment.Right
-    KillLabel.Text = "Farmed Kills: 0"
-
-    KillLabel.Parent = ScreenGui
-
-    local function SetupKillCounter()
-        local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
-
-        if not leaderstats then
-            return
-        end
-
-        local kills = leaderstats:FindFirstChild("Kills")
-
-        if not kills then
-            return
-        end
-
-        StartingKills = kills.Value
-        CurrentKills = kills.Value
-
-        kills:GetPropertyChangedSignal("Value"):Connect(function()
-            CurrentKills = kills.Value
-
-            local farmed = CurrentKills - StartingKills
-
-            KillLabel.Text = "Farmed Kills: " ..
-                tostring(math.max(0, farmed))
-        end)
-    end
-
     task.spawn(function()
-        while not LocalPlayer:FindFirstChild("leaderstats") do
+        local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+        local oldGui = playerGui:FindFirstChild("FarmKillCounter")
+        if oldGui then
+            oldGui:Destroy()
+        end
+
+        local gui = Instance.new("ScreenGui")
+        gui.Name = "FarmKillCounter"
+        gui.ResetOnSpawn = false
+        gui.Parent = playerGui
+
+        local label = Instance.new("TextLabel")
+        label.Name = "KillCounter"
+        label.AnchorPoint = Vector2.new(1, 0)
+        label.Position = UDim2.new(1, -20, 0, 20)
+        label.Size = UDim2.new(0, 220, 0, 35)
+        label.BackgroundTransparency = 1
+        label.BorderSizePixel = 0
+        label.TextColor3 = Color3.fromRGB(255, 255, 255)
+        label.TextSize = 18
+        label.Font = Enum.Font.GothamBold
+        label.TextXAlignment = Enum.TextXAlignment.Right
+        label.Text = "Farmed Kills: 0"
+        label.Parent = gui
+
+        local kills
+
+        while not kills do
+            local stats = LocalPlayer:FindFirstChild("leaderstats")
+            kills = stats and stats:FindFirstChild("Kills")
             RunService.Heartbeat:Wait()
         end
 
-        while not LocalPlayer.leaderstats:FindFirstChild("Kills") do
-            RunService.Heartbeat:Wait()
+        local startingKills = kills.Value
+
+        local function UpdateCounter()
+            label.Text = "Farmed Kills: " ..
+                tostring(math.max(0, kills.Value - startingKills))
         end
 
-        SetupKillCounter()
+        UpdateCounter()
+        kills:GetPropertyChangedSignal("Value"):Connect(UpdateCounter)
     end)
 end
 
@@ -370,8 +337,10 @@ end
 local AltStates = {}
 
 local function GetAltState(username)
-    if not AltStates[username] then
-        AltStates[username] = {
+    local key = username:lower()
+
+    if not AltStates[key] then
+        AltStates[key] = {
             Available = false,
             Character = nil,
             Humanoid = nil,
@@ -380,16 +349,18 @@ local function GetAltState(username)
         }
     end
 
-    return AltStates[username]
+    return AltStates[key]
 end
 
 local function MonitorAlt(username)
-    local player = FindPlayer(username)
-
     local state = GetAltState(username)
+    local player = FindPlayer(username)
 
     if not player then
         state.Available = false
+        state.Character = nil
+        state.Humanoid = nil
+        state.RootPart = nil
         return
     end
 
@@ -416,10 +387,15 @@ local function MonitorAlt(username)
 end
 
 local function GetAvailableAlt()
-    for _, username in ipairs(Config.AltAccounts) do
+    for _, username in ipairs(AltAccounts) do
         local state = GetAltState(username)
 
-        if state.Available and state.RootPart then
+        if state.Available
+            and state.Character
+            and state.RootPart
+            and state.Humanoid
+            and state.Humanoid.Health > 0
+        then
             return username, state.RootPart
         end
     end
@@ -428,16 +404,49 @@ local function GetAvailableAlt()
 end
 
 --==================================================
+-- MAIN ACCOUNT: AVAILABILITY CHECK
+--==================================================
+
+local function WaitForAvailableAlt()
+    local started = os.clock()
+
+    repeat
+        for _, username in ipairs(AltAccounts) do
+            MonitorAlt(username)
+        end
+
+        local username, root = GetAvailableAlt()
+
+        if username and root then
+            return username, root
+        end
+
+        RunService.Heartbeat:Wait()
+    until os.clock() - started >= Config.CharacterAvailabilityTimeout
+
+    return nil, nil
+end
+
+--==================================================
 -- ALT ACCOUNT: MAIN DETECTION
 --==================================================
 
-local ResetTriggered = false
+-- The alt must first observe the main outside the detection
+-- radius. This prevents an immediate reset because the
+-- original main/alt positions are only 5.83 studs apart.
+
+local ResetArmed = false
+local ResetInProgress = false
 
 local function MonitorMain()
+    if not CharacterReady or not RootPart or not Humanoid then
+        return
+    end
+
     local main = FindPlayer(Config.MainAccount)
 
     if not main then
-        ResetTriggered = false
+        ResetArmed = false
         return
     end
 
@@ -450,94 +459,104 @@ local function MonitorMain()
     local mainRoot = mainCharacter:FindFirstChild("HumanoidRootPart")
     local mainHumanoid = mainCharacter:FindFirstChildOfClass("Humanoid")
 
-    if not mainRoot or not mainHumanoid then
-        return
-    end
-
-    if not RootPart or not CharacterReady then
+    if not mainRoot or not mainHumanoid or mainHumanoid.Health <= 0 then
         return
     end
 
     local distance = (mainRoot.Position - RootPart.Position).Magnitude
 
-    if distance <= Config.DetectionDistance then
-        if not ResetTriggered then
-            ResetTriggered = true
+    if distance > Config.DetectionDistance then
+        ResetArmed = true
+        return
+    end
 
-            print("[Farm] Main detected nearby")
+    if distance <= Config.DetectionDistance
+        and ResetArmed
+        and not ResetInProgress
+    then
+        ResetArmed = false
+        ResetInProgress = true
 
-            if Humanoid and Humanoid.Health > 0 then
-                Humanoid.Health = 0
-            end
+        print("[Farm] Main detected. Reset requested.")
+
+        -- This is a client-side request. The game server
+        -- determines whether the character actually resets.
+        if Humanoid and Humanoid.Health > 0 then
+            Humanoid.Health = 0
         end
-    else
-        ResetTriggered = false
+
+        task.delay(2, function()
+            ResetInProgress = false
+        end)
     end
 end
 
 --==================================================
--- HEARTBEAT MONITORING
+-- INDEPENDENT MONITORING LOOPS
 --==================================================
 
-local LastPositionCheck = 0
-local PositionCheckInterval = 0.5
+-- MAIN LOOP
+-- This loop does not depend on the main character being ready.
 
-RunService.Heartbeat:Connect(function()
-    -- Character readiness
+if IsMain then
+    task.spawn(function()
+        while true do
+            for _, username in ipairs(AltAccounts) do
+                MonitorAlt(username)
+            end
 
-    if not CharacterReady then
-        return
-    end
+            local username, root = WaitForAvailableAlt()
 
-    if not Character or not Humanoid or not RootPart then
-        return
-    end
+            if username and root then
+                print("[Farm] Available alt:", username)
+            end
 
-    if Character ~= LocalPlayer.Character then
-        CharacterReady = false
-        return
-    end
-
-    if Humanoid.Health <= 0 then
-        CharacterReady = false
-        return
-    end
-
-    -- ALT ACCOUNT PROCESS
-
-    if IsAlt then
-        MonitorMain()
-    end
-
-    -- MAIN ACCOUNT PROCESS
-
-    if IsMain then
-        for _, username in ipairs(Config.AltAccounts) do
-            MonitorAlt(username)
+            task.wait(0.5)
         end
+    end)
+end
 
-        local selectedUsername, selectedRoot = GetAvailableAlt()
+-- ALT LOOP
+-- This loop continues independently through respawns.
 
-        if selectedUsername and selectedRoot then
-            local availableFor = os.clock() -
-                GetAltState(selectedUsername).LastSeen
+if IsAlt then
+    task.spawn(function()
+        while true do
+            if CharacterReady
+                and Character == LocalPlayer.Character
+                and Humanoid
+                and RootPart
+                and Humanoid.Health > 0
+            then
+                MonitorMain()
+            end
 
-            if availableFor <= Config.CharacterAvailabilityTimeout then
-                -- Alt availability confirmed.
+            task.wait(0.1)
+        end
+    end)
+end
+
+--==================================================
+-- POSITION MAINTENANCE
+--==================================================
+
+task.spawn(function()
+    while true do
+        if CharacterReady
+            and Character == LocalPlayer.Character
+            and Humanoid
+            and RootPart
+            and Humanoid.Health > 0
+        then
+            if IsAlt then
+                if (RootPart.Position - AssignedPosition).Magnitude > 2 then
+                    RootPart.CFrame = CFrame.new(AssignedPosition)
+                end
             end
         end
-    end
 
-    -- Position maintenance
-
-    if os.clock() - LastPositionCheck >= PositionCheckInterval then
-        LastPositionCheck = os.clock()
-
-        if IsAlt then
-            if (RootPart.Position - AssignedPosition).Magnitude > 2 then
-                RootPart.CFrame = CFrame.new(AssignedPosition)
-            end
-        end
+        task.wait(Config.PositionCheckInterval)
     end
 end)
 
+print("[Farm] System initialized:", LocalPlayer.Name)
