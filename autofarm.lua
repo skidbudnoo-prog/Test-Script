@@ -1,8 +1,8 @@
 
 --==================================================
 -- MULTI-ACCOUNT FARMING SYSTEM
--- MAIN + ALT CONTROLLER
--- SYNCHRONIZED SKILL 4 / RESET CYCLE
+-- HEARTBEAT HEALTH DETECTION
+-- MAIN SKILL 4 / ALT RESET CYCLE
 --==================================================
 
 local Players = game:GetService("Players")
@@ -27,11 +27,7 @@ local function CleanUsername(value)
     end
 
     value = value:match("^%s*(.-)%s*$")
-    if value == "" then
-        return nil
-    end
-
-    return value
+    return value ~= "" and value or nil
 end
 
 local MainAccount = CleanUsername(SharedEnv.MainAccount) or ""
@@ -109,16 +105,12 @@ if not IsMain and not IsAlt then
     return
 end
 
-if IsMain and #AltAccounts == 0 then
-    warn("[Farm] No alt accounts configured")
-end
-
-print("[Farm] Account:", LocalPlayer.Name)
-print("[Farm] Role:", IsMain and "MAIN" or "ALT")
-
 local AssignedPosition = IsMain
     and Config.MainPosition
     or Config.AltPosition
+
+print("[Farm] Account:", LocalPlayer.Name)
+print("[Farm] Role:", IsMain and "MAIN" or "ALT")
 
 --==================================================
 -- CHARACTER STATE
@@ -178,7 +170,7 @@ local function WaitForLocalCharacter(timeout)
             return true
         end
 
-        task.wait(0.05)
+        RunService.Heartbeat:Wait()
     until os.clock() - started >= timeout
 
     return false
@@ -216,7 +208,6 @@ end
 --==================================================
 
 local MainCycleBusy = false
-local MainCycleCharacter = nil
 local MainCycleUsed = false
 
 local function PressSkill4()
@@ -247,57 +238,42 @@ local function PressSkill4()
         return false
     end
 
-    print("[Farm] MAIN: Skill 4 pressed")
+    print("[Farm] MAIN PRESSED SKILL 4")
     return true
 end
 
---==================================================
--- MAIN: ALT RESET START DETECTION
---==================================================
-
-local function OnAltResetStarted(player)
-    if not IsMain then
+local function StartMainCycle()
+    if not IsMain or MainCycleBusy or MainCycleUsed then
         return
     end
 
-    if MainCycleBusy or MainCycleUsed then
-        return
-    end
-
-    if not player or player.Parent ~= Players then
+    if not WaitForLocalCharacter(2) then
+        warn("[Farm] Main is not alive; cannot activate Skill 4")
         return
     end
 
     MainCycleBusy = true
     MainCycleUsed = true
 
-    print("[Farm] Alt reset started:", player.Name)
-    print("[Farm] Main activating Skill 4")
+    local cycleCharacter = LocalPlayer.Character
 
     task.spawn(function()
-        -- Wait until the main character is alive.
-        if not WaitForLocalCharacter(5) then
-            warn("[Farm] Main character unavailable")
-            MainCycleBusy = false
-            return
-        end
+        print("[Farm] ALT HEALTH REACHED ZERO")
+        print("[Farm] ACTIVATING SKILL 4 NOW")
 
-        MainCycleCharacter = LocalPlayer.Character
-
-        -- Skill 4 happens immediately when the alt starts removing.
         PressSkill4()
 
-        -- Wait 1.5 seconds before resetting the main.
         task.wait(Config.SkillWaitBeforeReset)
 
-        -- Do not reset an unexpected replacement character.
-        if LocalPlayer.Character == MainCycleCharacter
+        if LocalPlayer.Character == cycleCharacter
             and CharacterReady
             and Humanoid
             and Humanoid.Health > 0
         then
-            print("[Farm] Main resetting after Skill 4")
+            print("[Farm] Main resetting after 1.5 seconds")
             RequestLocalReset()
+        else
+            warn("[Farm] Main character changed before reset")
         end
 
         MainCycleBusy = false
@@ -370,10 +346,8 @@ local function HandleCharacterSpawn(char)
             RootPart.CFrame = CFrame.new(AssignedPosition)
         end
 
-        -- A new main character can begin the next cycle.
         if IsMain then
             MainCycleUsed = false
-            MainCycleCharacter = nil
             print("[Farm] Main ready for next cycle")
         end
     end)
@@ -480,10 +454,10 @@ if Config.AutoEmoteAndSwitch then
 end
 
 --==================================================
--- MAIN: BIND ALT RESET EVENTS
+-- MAIN: HEARTBEAT ALT HEALTH MONITOR
 --==================================================
 
-local BoundAltPlayers = {}
+local WatchedAltCharacters = {}
 
 local function IsConfiguredAlt(player)
     for _, username in ipairs(AltAccounts) do
@@ -494,6 +468,61 @@ local function IsConfiguredAlt(player)
 
     return false
 end
+
+local function WatchAltCharacter(player, char)
+    if not IsMain or not IsConfiguredAlt(player) then
+        return
+    end
+
+    local humanoid = char:WaitForChild("Humanoid", 10)
+
+    if not humanoid then
+        warn("[Farm] Could not find alt Humanoid:", player.Name)
+        return
+    end
+
+    local state = {
+        Character = char,
+        Humanoid = humanoid,
+        Triggered = false,
+    }
+
+    WatchedAltCharacters[player] = state
+
+    local function CheckAltHealth()
+        if state.Triggered then
+            return
+        end
+
+        if player.Character ~= char then
+            return
+        end
+
+        if humanoid.Health <= 0 then
+            state.Triggered = true
+
+            print(
+                "[Farm] ALT HEALTH ZERO:",
+                player.Name,
+                "Health:",
+                humanoid.Health
+            )
+
+            StartMainCycle()
+        end
+    end
+
+    -- Immediate health-change detection.
+    humanoid.HealthChanged:Connect(CheckAltHealth)
+
+    -- Death event backup.
+    humanoid.Died:Connect(CheckAltHealth)
+
+    -- Initial check in case health already reached zero.
+    CheckAltHealth()
+end
+
+local BoundAltPlayers = {}
 
 local function BindAltPlayer(player)
     if not IsMain or not IsConfiguredAlt(player) then
@@ -506,25 +535,15 @@ local function BindAltPlayer(player)
 
     BoundAltPlayers[player] = true
 
-    -- Listen for the START of the alt reset.
-    -- This fires before the alt's next CharacterAdded.
-    player.CharacterRemoving:Connect(function(oldCharacter)
-        if not IsMain then
-            return
-        end
-
-        if player.Parent ~= Players then
-            return
-        end
-
-        if not oldCharacter then
-            return
-        end
-
-        OnAltResetStarted(player)
+    player.CharacterAdded:Connect(function(char)
+        task.spawn(WatchAltCharacter, player, char)
     end)
 
-    print("[Farm] Watching alt reset:", player.Name)
+    if player.Character then
+        task.spawn(WatchAltCharacter, player, player.Character)
+    end
+
+    print("[Farm] Health monitoring enabled:", player.Name)
 end
 
 if IsMain then
@@ -536,179 +555,160 @@ if IsMain then
 
     Players.PlayerRemoving:Connect(function(player)
         BoundAltPlayers[player] = nil
+        WatchedAltCharacters[player] = nil
     end)
 end
 
 --==================================================
--- ALT: RESET AFTER MAIN RESET STARTS
+-- ALT: MONITOR MAIN HEALTH
 --==================================================
 
-local MainResetPending = false
-local BoundMainPlayer = nil
+local MainCharacterWatched = nil
+local MainDeathTriggered = false
+local AltResetTaskRunning = false
 
-local function BindMainPlayer(player)
-    if not IsAlt or not player then
+local function StartAltResetAfterMainDeath()
+    if not IsAlt or AltResetTaskRunning then
         return
     end
 
-    if player.Name:lower() ~= Config.MainAccount:lower() then
+    AltResetTaskRunning = true
+
+    task.spawn(function()
+        print("[Farm] MAIN HEALTH ZERO")
+        print("[Farm] Waiting 3 seconds before alt reset")
+
+        task.wait(Config.AltCooldownWait)
+
+        if WaitForLocalCharacter(5) then
+            print("[Farm] Cooldown finished. Alt resetting now.")
+            RequestLocalReset()
+        else
+            warn("[Farm] Alt character not ready after cooldown")
+        end
+
+        -- The next alt character spawn re-arms the cycle.
+    end)
+end
+
+local function WatchMainCharacter(char)
+    if not IsAlt then
         return
     end
 
-    if BoundMainPlayer == player then
+    if MainCharacterWatched == char then
         return
     end
 
-    BoundMainPlayer = player
+    MainCharacterWatched = char
+    MainDeathTriggered = false
 
-    print("[Farm] Watching main reset:", player.Name)
+    local humanoid = char:WaitForChild("Humanoid", 10)
 
-    player.CharacterRemoving:Connect(function()
-        if MainResetPending then
+    if not humanoid then
+        warn("[Farm] Main Humanoid not found")
+        return
+    end
+
+    local function CheckMainHealth()
+        if MainDeathTriggered then
             return
         end
 
-        MainResetPending = true
+        if humanoid.Health <= 0 then
+            MainDeathTriggered = true
+            StartAltResetAfterMainDeath()
+        end
+    end
 
-        print("[Farm] Main reset started. Alt cooldown:", Config.AltCooldownWait)
+    humanoid.HealthChanged:Connect(CheckMainHealth)
+    humanoid.Died:Connect(CheckMainHealth)
 
-        task.spawn(function()
-            -- Wait 3 seconds after the main begins resetting.
-            task.wait(Config.AltCooldownWait)
-
-            if WaitForLocalCharacter(5) then
-                print("[Farm] Alt cooldown finished. Resetting alt.")
-                RequestLocalReset()
-            else
-                warn("[Farm] Alt character was not ready")
-            end
-
-            MainResetPending = false
-        end)
-    end)
+    CheckMainHealth()
 end
 
 if IsAlt then
     local main = FindPlayer(Config.MainAccount)
 
     if main then
-        BindMainPlayer(main)
-    end
+        main.CharacterAdded:Connect(function(char)
+            task.spawn(WatchMainCharacter, char)
+        end)
 
-    Players.PlayerAdded:Connect(BindMainPlayer)
-end
-
---==================================================
--- MAIN: ALT AVAILABILITY MONITOR
---==================================================
-
-local AltStates = {}
-
-local function GetAltState(username)
-    local key = username:lower()
-
-    if not AltStates[key] then
-        AltStates[key] = {
-            Available = false,
-            Character = nil,
-            Humanoid = nil,
-            RootPart = nil,
-            LastSeen = 0,
-        }
-    end
-
-    return AltStates[key]
-end
-
-local function MonitorAlt(username)
-    local state = GetAltState(username)
-    local player = FindPlayer(username)
-
-    if not player then
-        state.Available = false
-        state.Character = nil
-        state.Humanoid = nil
-        state.RootPart = nil
-        return
-    end
-
-    local char = player.Character
-
-    if not char then
-        state.Available = false
-        return
-    end
-
-    local humanoid = char:FindFirstChildOfClass("Humanoid")
-    local root = char:FindFirstChild("HumanoidRootPart")
-
-    if not humanoid or not root or humanoid.Health <= 0 then
-        state.Available = false
-        return
-    end
-
-    state.Available = true
-    state.Character = char
-    state.Humanoid = humanoid
-    state.RootPart = root
-    state.LastSeen = os.clock()
-end
-
-local function GetAvailableAlt()
-    for _, username in ipairs(AltAccounts) do
-        local state = GetAltState(username)
-
-        if state.Available
-            and state.Character
-            and state.RootPart
-            and state.Humanoid
-            and state.Humanoid.Health > 0
-        then
-            return username, state.RootPart
+        if main.Character then
+            task.spawn(WatchMainCharacter, main.Character)
         end
-    end
+    else
+        Players.PlayerAdded:Connect(function(player)
+            if player.Name:lower() == Config.MainAccount:lower() then
+                player.CharacterAdded:Connect(function(char)
+                    task.spawn(WatchMainCharacter, char)
+                end)
 
-    return nil, nil
-end
-
-local function WaitForAvailableAlt()
-    local started = os.clock()
-
-    repeat
-        for _, username in ipairs(AltAccounts) do
-            MonitorAlt(username)
-        end
-
-        local username, root = GetAvailableAlt()
-
-        if username and root then
-            return username, root
-        end
-
-        RunService.Heartbeat:Wait()
-    until os.clock() - started >= Config.CharacterAvailabilityTimeout
-
-    return nil, nil
-end
-
-if IsMain then
-    task.spawn(function()
-        while true do
-            for _, username in ipairs(AltAccounts) do
-                MonitorAlt(username)
+                if player.Character then
+                    task.spawn(WatchMainCharacter, player.Character)
+                end
             end
+        end)
+    end
 
-            local username = WaitForAvailableAlt()
-
-            if username then
-                -- Availability tracking only.
-                -- The reset event controls the Skill 4 cycle.
-            end
-
-            task.wait(0.5)
-        end
+    -- Re-arm alt's next cycle after it respawns.
+    LocalPlayer.CharacterAdded:Connect(function()
+        AltResetTaskRunning = false
+        print("[Farm] Alt respawned and ready for next cycle")
     end)
 end
+
+--==================================================
+-- HEARTBEAT FALLBACK MONITOR
+--==================================================
+
+RunService.Heartbeat:Connect(function()
+    if IsMain then
+        -- Poll every watched alt each frame.
+        for player, state in pairs(WatchedAltCharacters) do
+            if player.Parent == Players
+                and state.Character
+                and state.Humanoid
+                and not state.Triggered
+            then
+                if state.Humanoid.Health <= 0 then
+                    state.Triggered = true
+
+                    print(
+                        "[Farm] HEARTBEAT DETECTED ALT ZERO:",
+                        player.Name
+                    )
+
+                    StartMainCycle()
+                end
+            end
+        end
+    end
+
+    if IsAlt then
+        -- Poll the main character every frame.
+        local main = FindPlayer(Config.MainAccount)
+
+        if main and main.Character then
+            local mainCharacter = main.Character
+
+            if MainCharacterWatched ~= mainCharacter then
+                task.spawn(WatchMainCharacter, mainCharacter)
+            end
+
+            local mainHumanoid =
+                mainCharacter:FindFirstChildOfClass("Humanoid")
+
+            if mainHumanoid and mainHumanoid.Health <= 0 then
+                if not MainDeathTriggered then
+                    MainDeathTriggered = true
+                    StartAltResetAfterMainDeath()
+                end
+            end
+        end
+    end
+end)
 
 --==================================================
 -- POSITION MAINTENANCE
@@ -739,4 +739,5 @@ end)
 
 print("[Farm] System initialized:", LocalPlayer.Name)
 print("[Farm] Role:", IsMain and "MAIN" or "ALT")
-print("[Farm] Synchronized Skill 4 cycle enabled")
+print("[Farm] Heartbeat health detection enabled")
+print("[Farm] Skill 4 cycle:", IsMain and "ENABLED" or "ALT RESET MODE")
