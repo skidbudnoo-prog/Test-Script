@@ -1,13 +1,15 @@
-
 --==================================================
 -- MULTI-ACCOUNT FARMING SYSTEM
--- Main + Alt Account Controller
+-- MAIN + ALT CONTROLLER
+-- REPEATING SKILL 4 CYCLE
 --==================================================
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local LocalPlayer = Players.LocalPlayer
+
 if not LocalPlayer then
     warn("[Farm] LocalPlayer unavailable")
     return
@@ -66,6 +68,12 @@ local Config = {
 
     KillCounter = true,
     PositionCheckInterval = 0.5,
+
+    -- Skill 4 cycle
+    SkillKey = Enum.KeyCode.Four,
+    SkillWaitBeforeReset = 1.5,
+    AltCooldownWait = 3,
+    KeyPressDuration = 0.12,
 }
 
 --==================================================
@@ -159,6 +167,111 @@ local function WaitForCharacterReady(generation)
     end
 
     return false
+end
+
+local function WaitForLocalCharacter(timeout)
+    local started = os.clock()
+
+    repeat
+        if CharacterReady
+            and Character == LocalPlayer.Character
+            and Humanoid
+            and RootPart
+            and Humanoid.Health > 0
+        then
+            return true
+        end
+
+        task.wait(0.1)
+    until os.clock() - started >= timeout
+
+    return false
+end
+
+--==================================================
+-- RESET FUNCTION
+--==================================================
+
+local function RequestLocalReset()
+    local humanoid = LocalPlayer.Character
+        and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+
+    if not humanoid or humanoid.Health <= 0 then
+        return false
+    end
+
+    print("[Farm] Reset requested:", LocalPlayer.Name)
+
+    local success = pcall(function()
+        humanoid.Health = 0
+    end)
+
+    return success
+end
+
+--==================================================
+-- MAIN: VIRTUAL INPUT SKILL 4
+--==================================================
+
+local SkillCycleBusy = false
+
+local function PressSkill4()
+    if not IsMain then
+        return false
+    end
+
+    local success, err = pcall(function()
+        VirtualInputManager:SendKeyEvent(
+            true,
+            Config.SkillKey,
+            false,
+            game
+        )
+
+        task.wait(Config.KeyPressDuration)
+
+        VirtualInputManager:SendKeyEvent(
+            false,
+            Config.SkillKey,
+            false,
+            game
+        )
+    end)
+
+    if not success then
+        warn("[Farm] Skill 4 input failed:", err)
+        return false
+    end
+
+    print("[Farm] Main activated Skill 4")
+    return true
+end
+
+local function RunMainSkillCycle()
+    if not IsMain or SkillCycleBusy then
+        return
+    end
+
+    SkillCycleBusy = true
+
+    task.spawn(function()
+        if not WaitForLocalCharacter(5) then
+            warn("[Farm] Main character not ready for Skill 4")
+            SkillCycleBusy = false
+            return
+        end
+
+        -- Activate Skill 4
+        PressSkill4()
+
+        -- Wait 1.5 seconds
+        task.wait(Config.SkillWaitBeforeReset)
+
+        -- Reset main
+        RequestLocalReset()
+
+        SkillCycleBusy = false
+    end)
 end
 
 --==================================================
@@ -259,6 +372,7 @@ if Config.KillCounter then
         local playerGui = LocalPlayer:WaitForChild("PlayerGui")
 
         local oldGui = playerGui:FindFirstChild("FarmKillCounter")
+
         if oldGui then
             oldGui:Destroy()
         end
@@ -293,8 +407,8 @@ if Config.KillCounter then
         local startingKills = kills.Value
 
         local function UpdateCounter()
-            label.Text = "Farmed Kills: " ..
-                tostring(math.max(0, kills.Value - startingKills))
+            label.Text = "Farmed Kills: "
+                .. tostring(math.max(0, kills.Value - startingKills))
         end
 
         UpdateCounter()
@@ -331,7 +445,195 @@ if Config.AutoEmoteAndSwitch then
 end
 
 --==================================================
--- MAIN ACCOUNT: ALT MONITORING
+-- MAIN: MONITOR ALT RESPAWNS
+--==================================================
+
+local BoundAltPlayers = {}
+
+local function BindAltPlayer(player)
+    if not IsMain then
+        return
+    end
+
+    if not player then
+        return
+    end
+
+    local isConfiguredAlt = false
+
+    for _, username in ipairs(AltAccounts) do
+        if player.Name:lower() == username:lower() then
+            isConfiguredAlt = true
+            break
+        end
+    end
+
+    if not isConfiguredAlt then
+        return
+    end
+
+    if BoundAltPlayers[player] then
+        return
+    end
+
+    BoundAltPlayers[player] = true
+
+    -- Ignore the alt's initial character.
+    -- Only a later respawn starts the Skill 4 cycle.
+    local hasInitialCharacter = player.Character ~= nil
+
+    player.CharacterAdded:Connect(function()
+        if not hasInitialCharacter then
+            hasInitialCharacter = true
+            print("[Farm] Alt initial character:", player.Name)
+            return
+        end
+
+        print("[Farm] Alt respawn detected:", player.Name)
+
+        task.spawn(function()
+            -- Prevent overlapping Skill 4 cycles.
+            while SkillCycleBusy do
+                task.wait(0.1)
+            end
+
+            RunMainSkillCycle()
+        end)
+    end)
+end
+
+if IsMain then
+    for _, player in ipairs(Players:GetPlayers()) do
+        BindAltPlayer(player)
+    end
+
+    Players.PlayerAdded:Connect(BindAltPlayer)
+end
+
+--==================================================
+-- ALT: RESET AFTER MAIN RESETS
+--==================================================
+
+local MainResetPending = false
+local BoundMainPlayer = nil
+
+local function BindMainPlayer(player)
+    if not IsAlt or not player then
+        return
+    end
+
+    if player.Name:lower() ~= Config.MainAccount:lower() then
+        return
+    end
+
+    if BoundMainPlayer == player then
+        return
+    end
+
+    BoundMainPlayer = player
+
+    print("[Farm] Monitoring main reset:", player.Name)
+
+    player.CharacterRemoving:Connect(function()
+        if MainResetPending then
+            return
+        end
+
+        MainResetPending = true
+
+        print("[Farm] Main reset detected. Waiting for cooldown...")
+
+        task.spawn(function()
+            -- Wait for Skill 4 cooldown.
+            task.wait(Config.AltCooldownWait)
+
+            -- Make sure the alt has a living character.
+            if WaitForLocalCharacter(5) then
+                print("[Farm] Alt cooldown finished. Resetting alt.")
+
+                RequestLocalReset()
+            else
+                warn("[Farm] Alt character was not ready for reset")
+            end
+
+            MainResetPending = false
+        end)
+    end)
+end
+
+if IsAlt then
+    local main = FindPlayer(Config.MainAccount)
+
+    if main then
+        BindMainPlayer(main)
+    end
+
+    Players.PlayerAdded:Connect(BindMainPlayer)
+end
+
+--==================================================
+-- ALT: INITIAL MAIN DISTANCE DETECTION
+--==================================================
+
+local ResetArmed = false
+local ResetInProgress = false
+
+local function MonitorMainDistance()
+    if not IsAlt then
+        return
+    end
+
+    if not CharacterReady or not RootPart or not Humanoid then
+        return
+    end
+
+    local main = FindPlayer(Config.MainAccount)
+
+    if not main then
+        ResetArmed = false
+        return
+    end
+
+    local mainCharacter = main.Character
+
+    if not mainCharacter then
+        return
+    end
+
+    local mainRoot = mainCharacter:FindFirstChild("HumanoidRootPart")
+    local mainHumanoid = mainCharacter:FindFirstChildOfClass("Humanoid")
+
+    if not mainRoot or not mainHumanoid or mainHumanoid.Health <= 0 then
+        return
+    end
+
+    local distance = (mainRoot.Position - RootPart.Position).Magnitude
+
+    -- Arm only after the main has moved outside the radius.
+    if distance > Config.DetectionDistance then
+        ResetArmed = true
+        return
+    end
+
+    if distance <= Config.DetectionDistance
+        and ResetArmed
+        and not ResetInProgress
+    then
+        ResetArmed = false
+        ResetInProgress = true
+
+        print("[Farm] Main detected nearby. Resetting alt.")
+
+        RequestLocalReset()
+
+        task.delay(3, function()
+            ResetInProgress = false
+        end)
+    end
+end
+
+--==================================================
+-- MAIN: ALT AVAILABILITY MONITOR
 --==================================================
 
 local AltStates = {}
@@ -403,10 +705,6 @@ local function GetAvailableAlt()
     return nil, nil
 end
 
---==================================================
--- MAIN ACCOUNT: AVAILABILITY CHECK
---==================================================
-
 local function WaitForAvailableAlt()
     local started = os.clock()
 
@@ -428,76 +726,10 @@ local function WaitForAvailableAlt()
 end
 
 --==================================================
--- ALT ACCOUNT: MAIN DETECTION
---==================================================
-
--- The alt must first observe the main outside the detection
--- radius. This prevents an immediate reset because the
--- original main/alt positions are only 5.83 studs apart.
-
-local ResetArmed = false
-local ResetInProgress = false
-
-local function MonitorMain()
-    if not CharacterReady or not RootPart or not Humanoid then
-        return
-    end
-
-    local main = FindPlayer(Config.MainAccount)
-
-    if not main then
-        ResetArmed = false
-        return
-    end
-
-    local mainCharacter = main.Character
-
-    if not mainCharacter then
-        return
-    end
-
-    local mainRoot = mainCharacter:FindFirstChild("HumanoidRootPart")
-    local mainHumanoid = mainCharacter:FindFirstChildOfClass("Humanoid")
-
-    if not mainRoot or not mainHumanoid or mainHumanoid.Health <= 0 then
-        return
-    end
-
-    local distance = (mainRoot.Position - RootPart.Position).Magnitude
-
-    if distance > Config.DetectionDistance then
-        ResetArmed = true
-        return
-    end
-
-    if distance <= Config.DetectionDistance
-        and ResetArmed
-        and not ResetInProgress
-    then
-        ResetArmed = false
-        ResetInProgress = true
-
-        print("[Farm] Main detected. Reset requested.")
-
-        -- This is a client-side request. The game server
-        -- determines whether the character actually resets.
-        if Humanoid and Humanoid.Health > 0 then
-            Humanoid.Health = 0
-        end
-
-        task.delay(2, function()
-            ResetInProgress = false
-        end)
-    end
-end
-
---==================================================
 -- INDEPENDENT MONITORING LOOPS
 --==================================================
 
--- MAIN LOOP
--- This loop does not depend on the main character being ready.
-
+-- MAIN ACCOUNT LOOP
 if IsMain then
     task.spawn(function()
         while true do
@@ -505,10 +737,11 @@ if IsMain then
                 MonitorAlt(username)
             end
 
-            local username, root = WaitForAvailableAlt()
+            local username = WaitForAvailableAlt()
 
-            if username and root then
-                print("[Farm] Available alt:", username)
+            if username then
+                -- Availability monitoring only.
+                -- Skill 4 is triggered by the alt respawn event.
             end
 
             task.wait(0.5)
@@ -516,9 +749,7 @@ if IsMain then
     end)
 end
 
--- ALT LOOP
--- This loop continues independently through respawns.
-
+-- ALT ACCOUNT LOOP
 if IsAlt then
     task.spawn(function()
         while true do
@@ -528,7 +759,7 @@ if IsAlt then
                 and RootPart
                 and Humanoid.Health > 0
             then
-                MonitorMain()
+                MonitorMainDistance()
             end
 
             task.wait(0.1)
@@ -559,4 +790,9 @@ task.spawn(function()
     end
 end)
 
+--==================================================
+-- INITIALIZATION
+--==================================================
+
 print("[Farm] System initialized:", LocalPlayer.Name)
+print("[Farm] Skill 4 cycle:", IsMain and "ENABLED" or "ALT MODE")
