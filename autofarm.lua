@@ -1,5 +1,6 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 
 local LocalPlayer = Players.LocalPlayer
 if not LocalPlayer then return end
@@ -39,10 +40,19 @@ local Config = {
     PositionCheckInterval = 0.5,
 
     SkillKey = Enum.KeyCode.Four,
+    MobileSkillName = "Jet Dive",
+    MobileButtonSearchTimeout = 8,
+
     SkillWaitBeforeReset = 2.9,
     CycleWaitAfterMainSpawn = 3.2,
     KeyPressDuration = 0.12,
 }
+
+-- Mobile is detected separately from PC.
+-- Touch-only devices use the mobile button.
+-- Devices with a physical keyboard use the PC key method.
+local IsMobile = UserInputService.TouchEnabled
+    and not UserInputService.KeyboardEnabled
 
 local function FindPlayer(username)
     if not username or username == "" then return nil end
@@ -137,6 +147,112 @@ local function RequestLocalReset()
 end
 
 --==================================================
+-- MOBILE SKILL BUTTON DETECTION
+--==================================================
+
+local function NormalizeSkillText(value)
+    if typeof(value) ~= "string" then
+        return ""
+    end
+
+    value = value:lower()
+    value = value:gsub("%s+", " ")
+    value = value:match("^%s*(.-)%s*$")
+
+    return value
+end
+
+local function IsGuiVisible(guiObject)
+    local current = guiObject
+
+    while current and current ~= game do
+        if current:IsA("GuiObject") and not current.Visible then
+            return false
+        end
+
+        current = current.Parent
+    end
+
+    return true
+end
+
+local function FindJetDiveButton()
+    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if not playerGui then return nil end
+
+    local targetName = NormalizeSkillText(Config.MobileSkillName)
+
+    for _, object in ipairs(playerGui:GetDescendants()) do
+        if object:IsA("GuiButton") then
+            local buttonText = ""
+
+            if object:IsA("TextButton") then
+                buttonText = NormalizeSkillText(object.Text)
+            end
+
+            if buttonText == targetName then
+                if IsGuiVisible(object) and object.Active then
+                    return object
+                end
+            end
+
+            for _, child in ipairs(object:GetDescendants()) do
+                if child:IsA("TextLabel") or child:IsA("TextButton") then
+                    local childText = NormalizeSkillText(child.Text)
+
+                    if childText == targetName then
+                        if IsGuiVisible(object) and object.Active then
+                            return object
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+local function ActivateMobileSkill4()
+    if not IsMobile then
+        return false
+    end
+
+    local started = os.clock()
+    local button
+
+    repeat
+        if not GetCharacterComponents() then
+            return false
+        end
+
+        button = FindJetDiveButton()
+
+        if button then
+            break
+        end
+
+        task.wait(0.1)
+    until os.clock() - started >= Config.MobileButtonSearchTimeout
+
+    if not button then
+        warn("[Farm] Mobile Jet Dive button was not found")
+        return false
+    end
+
+    local success, err = pcall(function()
+        button:Activate()
+    end)
+
+    if not success then
+        warn("[Farm] Mobile Jet Dive activation failed:", err)
+        return false
+    end
+
+    return true
+end
+
+--==================================================
 -- MAIN SKILL 4
 --==================================================
 
@@ -146,6 +262,14 @@ local function PressSkill4()
     local char, humanoid = GetCharacterComponents()
     if not char or not humanoid then return false end
 
+    -- MOBILE ONLY:
+    -- Activate the actual Jet Dive on-screen button.
+    if IsMobile then
+        return ActivateMobileSkill4()
+    end
+
+    -- PC ONLY:
+    -- Keep the original keyboard activation.
     local success, err = pcall(function()
         local VirtualInputManager = game:GetService("VirtualInputManager")
 
@@ -167,7 +291,7 @@ local function PressSkill4()
     end)
 
     if not success then
-        warn("[Farm] Skill 4 input failed:", err)
+        warn("[Farm] PC Skill 4 input failed:", err)
         return false
     end
 
@@ -237,12 +361,16 @@ local function StartMainCycle()
 
         if skillActivated then
             task.wait(Config.SkillWaitBeforeReset)
-        end
 
-        if LocalPlayer.Character == mainCharacter
-            and GetCharacterComponents()
-        then
-            RequestLocalReset()
+            if LocalPlayer.Character == mainCharacter
+                and GetCharacterComponents()
+            then
+                RequestLocalReset()
+            end
+        else
+            -- Do not reset the main if Skill 4 failed.
+            -- Allow another attempt on a later alt death.
+            MainCycleTriggered = false
         end
 
         MainCycleBusy = false
